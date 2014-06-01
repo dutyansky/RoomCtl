@@ -1,5 +1,5 @@
 //
-// RoomCtl.ino -- Arduino sketch for miscellaneous low-level interfaceing for apartment 
+// RoomCtl.ino -- Arduino sketch for miscellaneous low-level interfacing for apartment 
 //  equipment: Servos for blinds, IR control for AC unit, etc.
 //
 // See also condsrv.py for high-level control & web interface.
