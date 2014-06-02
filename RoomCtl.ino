@@ -190,13 +190,11 @@ void ComputeCheckSum(char *pkt, int sz) {
 // ATAC=22 -- On, set T=22
 // ATAC=0  -- Off
 //
-//
 
 //                   0     1     2     3     4     5     6       7     8     9    10    11    12    13
 char irData[] =  { 0x02, 0x92, 0x0F, 0x00, 0x00, 0x00, 0xF0,   0x01, 0xE2, 0xFE, 0x71, 0x80, 0x11, 0xF0 };
 char offData[] = { 0x02, 0xB2, 0x0F, 0x00, 0x00, 0x00, 0xC0,   0x01, 0xD2, 0x0F, 0x00, 0x00, 0x00, 0x00,
                                                                0x01, 0xF2, 0xFE, 0x71, 0xA0, 0x11, 0xC0 };
-
 int CmdAC(const char *s) {
  int i, j, k;
  unsigned char b;       // Working byte variable
@@ -223,7 +221,7 @@ int CmdAC(const char *s) {
 
    irData[11] = (t - 16) << 4;
 
-  // Compute packet checksums
+   // Compute packet checksums
    ComputeCheckSum(irData, 7);    // For subpacket #1
    ComputeCheckSum(irData+7, 7);  // For subpacket #2
  }
@@ -261,7 +259,7 @@ int CmdAC(const char *s) {
 
  PulseIR(520);  // Final pulse
 
- delayMicroseconds(3000);       //
+ delayMicroseconds(3000);
 
  PulseIR(3000);                 // Long pre-start pulse
  delayMicroseconds(9000);       // Start "off" time
@@ -307,7 +305,7 @@ int CmdAC(const char *s) {
 
 
 //
-// CmdIRRD - Wait for and Read IR packet
+// CmdIRRD - Wait for and Read IR packet, Samsung AC IR code
 //
 int CmdIRRD(const char *s) {
  unsigned long t0, t1;
@@ -372,17 +370,17 @@ int CmdIRRD(const char *s) {
  // We also come here upon too long high state in bit Rx
  // 2. Wait for low->high, low pre-start pulse completion, 3000us
 NextPkt:
- PutRxByte(0x77);
+ PutRxByte(0x77); // Output delimiting signature, just a magic byte for human
  bitBuf = 0;
  bitCnt = 0;
 
- t0 = t1;
+ t0 = t1;	// Fetch starting time
  pulseLen = 0;
  while ((IRpin_PIN & (1 << IRpin)) == 0) {  // pin is still low
    pulseLen++;
    delayMicroseconds(RESOLUTION);
 
-   if(pulseLen >= MAXPULSE) { // Timeout
+   if(pulseLen >= MAXPULSE) {
      PrintF("Pre-start pulse detection low state timeout\r\n");
      goto PktOut;
    }
@@ -450,7 +448,7 @@ NextPkt:
   }
   t1 = micros();
   pulseLen = t1-t0;
-  if(pulseLen < 500-400) { //???
+  if(pulseLen < 500-400) { 
    PrintF("Too short high bit pulse length: %ld, at %d:%d\r\n", t1-t0, IrRxBufNdx, bitCnt);
    goto PktOut;
   }
@@ -677,14 +675,14 @@ int CmdSrv(const char *s) {
  }
 
 Servo1Pos = 90;
- t1 = (t < Servo1Pos)? t - 3: t + 3;
+ t1 = (t < Servo1Pos)? t - 3: t + 3; // Overdriven position
 
 
  digitalWrite(RelayPin, HIGH);
 
 
  Servo1.write(t1+3);
- Servo2.write(180-t1-2);
+ Servo2.write(180-t1-2);  // Calibration & take into account reverse connection
 
  delay(3000);    // Wait
  Servo1.write(t+3);

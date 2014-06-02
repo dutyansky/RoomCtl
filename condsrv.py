@@ -3,12 +3,9 @@
 # CondSrv.py -- Web inteface and high-level controls for miscellaneous apartment
 #  housekeping.
 #
-# Private project, something quick & least-resistance.
-# Custom CondCtl device for peripherals control (ventilation notably)
-#  and Arduino board for additional peripherals (servos for blinds, AC unit, etc.)
-# For both AT-like serial command interface is used.
-#
 # See RoomCtl.ino for Arduino sketch.
+#
+# Assumes Python 2.7.3, currently run on OpenWRT router box
 #
 
 import time
@@ -36,7 +33,7 @@ RoomT = []	# List of room temperatures for current day [120*3]
 BaroP = []	# List of baro pressures for current day [120*3]
 FridgeT = []	# List of fridge temperatures for current day [120*3]
 
-# Format:"31/Dec/2012 15:31:16"
+# Format: "31/Dec/2012 15:31:16"
 def DateTime():
  d = datetime.datetime.now()
  return d.strftime("%d/%b/%Y %H:%M:%S");
@@ -57,12 +54,16 @@ def OpenPort(devName, rate):
  com.isOpen();
  return com;
 
+# Exception class to return
 class PortError(Exception):
  def __init__(self, name):
   self.name = name
  def __str__(self):
   return repr(self.name)
 
+#
+# Reconnect(PortError x) - try to reconnect to the port, probably at different index
+#
 def Reconnect(x):
  global comC, comR
  time.sleep(2)
