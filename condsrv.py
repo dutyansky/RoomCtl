@@ -271,11 +271,32 @@ FormHtml = """
 <tr><td>Mode: </td>    <td> %s</td><td><INPUT TYPE=submit NAME='CondCtlMode' VALUE='Off'><INPUT TYPE=submit NAME='CondCtlMode' VALUE='On'></td></tr>
 <tr><td>T:%4.1f/%4.1f </td><td></td><td><INPUT TYPE=submit NAME='TargetT' VALUE='-'><INPUT TYPE=submit NAME='TargetT' VALUE='+'></td></tr>
 <tr><td>High Fan: </td><td> %s</td><td><INPUT TYPE=submit NAME='HighFanMode' VALUE='Off'><INPUT TYPE=submit NAME='HighFanMode' VALUE='On'><INPUT TYPE=submit NAME='HighFanMode' VALUE='Forced'></td></tr>
-<tr><td>Low Fan: </td> <td> %s</td><td><INPUT TYPE=submit NAME='LowFanMode'  VALUE='Off'><INPUT TYPE=submit NAME='LowFanMode'  VALUE='On'><INPUT TYPE=submit NAME='LowFanMode' VALUE='Forced'></td></tr>
+<tr><A href="/cgi-bin/settings">Settings</A></tr>
 <tr><td>Blinds: </td>  <td> %s</td><td><INPUT TYPE=submit NAME='BlindsMode'  VALUE='88'> <INPUT TYPE=submit NAME='BlindsMode' VALUE='90'><INPUT TYPE=submit NAME='BlindsMode' VALUE='95'><INPUT TYPE=submit NAME='BlindsMode' VALUE='100'></td></tr>
 </table>
+</form>
 %s
 """
+
+SettingsFormHtml = """
+<form>
+<div align="center"><br>
+<input type="checkbox" name="ControlAC" value="ControlACOn"> Control AC<br>
+</div>
+</form>
+"""
+
+#
+# MasterOff() - Disable all climate control functions
+# Inputs:
+#
+#	port, cmd - Ignored (just for generic command compatibility)
+#
+def MasterOff(port, cmd):
+  global comC, comR
+  WaitReply(comC, 'AT*MOD=0')	# Switch CondCtl off
+  WaitReply(comR, 'ATAC=0')	# Switch AC off
+
 
 
 #
@@ -359,6 +380,11 @@ def application(environ, start_response):
   return [f.getvalue()]
 
 
+ def SettingsPage():
+  r = [HdrHtml]		# Output html header
+  r.append(r.append(SettingsFormHtml))
+  return r
+
  def CondCtl(comC, comR):
 
   def TargetTInc(com, cmd):
@@ -374,7 +400,7 @@ def application(environ, start_response):
   
   commandMap = [
    ('CondCtlMode', 'On',    WaitReply, 'AT*MOD=3', comC),
-   ('CondCtlMode', 'Off',   WaitReply, 'AT*MOD=0', comC),
+   ('CondCtlMode', 'Off',   MasterOff,  '',	   0),
    ('TargetT',     '+',     TargetTInc, '',        comC),
    ('TargetT',     '-',     TargetTDec, '',        comC),
    ('HighFanMode', 'On',    WaitReply, 'AT*ENH=1', comC),
@@ -389,7 +415,7 @@ def application(environ, start_response):
    ('BlindsMode',  '100',   WaitReply, 'ATSRV=100',comR)  ]
 
 
-  # Do peripherals configuration if requested
+  # Do configuration if requested (if params are present in query string)
   params = parse_qs(environ.get('QUERY_STRING', ''))
   for t in commandMap:
    (name, value, fnc, cmd, port) = t
@@ -417,7 +443,6 @@ def application(environ, start_response):
   r.append(FormHtml%(GetCurrentMode(comC), 
            	     GetRoomT_FridgeT()[0], GetRoomTargetT(),
                      GetCurrentHighFanMode(comC), 
-                     GetCurrentLowFanMode(comC), 
                      GetCurrentBlindsMode(comR),
                      recentRate))
   
@@ -443,24 +468,31 @@ def application(environ, start_response):
     Reconnect(x)
    else:
     break;
- 
+
   return r
  else:
-  if path != 'cgi-bin/condctl':
-   start_response('404 NOT FOUND', [('Content-Type', 'text/html; charset=ISO-8859-1')])
-   return ['Not Found']
-  else:
-   start_response('200 OK', [('Content-Type','text/html; charset=ISO-8859-1')])
 
-   for i in range(3):
-    try:
-     r = CondCtl(comC, comR)
-    except PortError, x:
-     Reconnect(x)
-    else:
-     break;
-
+  if path == 'cgi-bin/settings':
+   start_response('200 OK', [('Content-Type','text/html; charset=ISO-8859-1')])   
+   r = SettingsPage()
    return r
+  else:
+
+   if path != 'cgi-bin/condctl':
+    start_response('404 NOT FOUND', [('Content-Type', 'text/html; charset=ISO-8859-1')])
+    return ['Not Found']
+   else:
+    start_response('200 OK', [('Content-Type','text/html; charset=ISO-8859-1')])
+ 
+    for i in range(3):
+     try:
+      r = CondCtl(comC, comR)
+     except PortError, x:
+      Reconnect(x)
+     else:
+      break;
+
+    return r
  
 def FindPort(name, rate):
  pdir = glob.glob(name)
