@@ -264,7 +264,26 @@ HdrHtml = """
 		 <body>
 """
 
-FormHtml = """
+SettingsHdrHtml = """
+  <!DOCTYPE html
+   PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN"
+		 "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
+		 <html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+		 <head>
+		 <title>CondCtl</title>
+		 <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
+<meta Http-Equiv="Cache-Control" Content="no-cache">
+<meta Http-Equiv="Pragma" Content="no-cache">
+<meta Http-Equiv="Expires" Content="0">
+<meta Http-Equiv="Pragma-directive: no-cache">
+<meta Http-Equiv="Cache-directive: no-cache">
+<meta name="viewport" content="width=400">
+		 <head>
+		 <body>
+"""
+
+
+MainFormHtml = """
 <img SRC="/cgi-bin/genimg">
 <form>
 <table cellpadding=5 cellspacing=5 border=1>
@@ -278,13 +297,37 @@ FormHtml = """
 %s
 """
 
-SettingsFormHtml = """
-<form>
-<div align="center"><br>
-<input type="checkbox" name="ControlAC" value="ControlACOn"> Control AC<br>
-</div>
-</form>
-"""
+EventHtmlTemplate = """<tr> 
+<td> <input name="EvEn_%%" type="checkbox"  value="enable"> Enable</td> 
+<td> <input name="EvTi_%%"   type="time"      value="12:01:00;"></td>
+<td> 
+<input name="EvD0_%%"   type="checkbox"  value="enable">
+<input name="EvD1_%%"   type="checkbox"  value="enable">
+<input name="EvD2_%%"   type="checkbox"  value="enable">
+<input name="EvD3_%%"   type="checkbox"  value="enable">
+<input name="EvD4_%%"   type="checkbox"  value="enable">
+<input name="EvD5_%%"   type="checkbox"  value="enable">
+<input name="EvD6_%%"   type="checkbox"  value="enable"></td> 
+<td>
+<select name="EvTy_%%">
+<option value="On">On</option>
+<option value="Off">Off</option>
+<option value="SetT">SetT</option>
+</select></td>
+<td>
+<select name="EvT_%%">
+<option value="18">18</option>
+<option value="19">19</option>
+<option value="20">20</option>
+<option value="21">21</option>
+<option value="22">22</option>
+<option value="23">23</option>
+<option value="24">24</option>
+</select></td>
+<td><INPUT TYPE=submit NAME="Delete_%%" value="Delete"></td>
+</tr>"""
+
+
 
 #
 # MasterOff() - Disable all climate control functions
@@ -380,9 +423,22 @@ def application(environ, start_response):
   return [f.getvalue()]
 
 
+ def EventHtml():
+  r = EventHtmlTemplate
+  r = r.replace("%%", "0");
+  return r
+
+
  def SettingsPage():
-  r = [HdrHtml]		# Output html header
-  r.append(r.append(SettingsFormHtml))
+  r = [SettingsHdrHtml]		# Output html header
+
+  r.append("""<form>""")
+  r.append("""<input type="checkbox" name="ControlAC" value="ControlACOn"> Control AC""")
+  r.append("""<table cellpadding=2 cellspacing=2 border=1>""")
+  r.append(EventHtml())
+  r.append("""</table>""")
+  r.append("""<INPUT TYPE=submit NAME="Save" value="Save">""")
+  r.append("""</form>""")
   return r
 
  def CondCtl(comC, comR):
@@ -415,7 +471,7 @@ def application(environ, start_response):
    ('BlindsMode',  '100',   WaitReply, 'ATSRV=100',comR)  ]
 
 
-  # Do configuration if requested (if params are present in query string)
+  # Do configuration if requested (if parameters are present in query string)
   params = parse_qs(environ.get('QUERY_STRING', ''))
   for t in commandMap:
    (name, value, fnc, cmd, port) = t
@@ -440,7 +496,7 @@ def application(environ, start_response):
 
   # Prepare html header and the rest of the page
   r = [HdrHtml]		# Output html header
-  r.append(FormHtml%(GetCurrentMode(comC), 
+  r.append(MainFormHtml%(GetCurrentMode(comC), 
            	     GetRoomT_FridgeT()[0], GetRoomTargetT(),
                      GetCurrentHighFanMode(comC), 
                      GetCurrentBlindsMode(comR),
