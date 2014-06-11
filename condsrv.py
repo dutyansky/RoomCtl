@@ -17,6 +17,7 @@ import datetime
 import threading
 import sys
 import glob
+import shelve
 
 sys.stderr = sys.stdout
 
@@ -27,8 +28,15 @@ import pdb
 from cgi import parse_qs, escape
 from wsgiref.simple_server import (make_server, WSGIRequestHandler)
 
-LastRoomT = 0.	# Last measured room temperature
-PrevExtT = [] 	# List of previous days external temperatures [2][120]
+#
+# Global configuration parameters
+#
+CfgAcCtlEnabled = False	# AC control enabled
+CfgTemp = 0		# Target room temperature
+CfgEvents = []		# Scheduler events
+
+ExtT = []    # List of external temperatures [120*3]
+PrevExtT = []   # List of previous days external temperatures [2][120*3]
 RoomT = []	# List of room temperatures for current day [120*3]
 BaroP = []	# List of baro pressures for current day [120*3]
 FridgeT = []	# List of fridge temperatures for current day [120*3]
@@ -38,7 +46,7 @@ def DateTime():
  d = datetime.datetime.now()
  return d.strftime("%d/%b/%Y %H:%M:%S");
 
- 
+
 #
 # com = OpenPort('/dev/ttyUSB0', rate);
 #
@@ -68,7 +76,7 @@ def Reconnect(x):
  global comC, comR
  time.sleep(2)
  if re.search(".*ttyUSB.*", x.name):
-   (comC, nameX) = FindPort("/dev/ttyUSB*", 38400) 
+   (comC, nameX) = FindPort("/dev/ttyUSB*", 38400)
  else:
    (comR, nameX) = FindPort("/dev/ttyACM*", 9600)
  time.sleep(2);
@@ -78,7 +86,7 @@ def Reconnect(x):
 #
 # [] = WaitReply(com [, "Command"])
 #
-def WaitReply(com, cmd=""): 
+def WaitReply(com, cmd=""):
  global LockC, LockR
 
  try:
@@ -87,11 +95,11 @@ def WaitReply(com, cmd=""):
   else:
    if com == comR:
     LockR.acquire();
-  
+
   r = [];				# Clear list of returned lines
   if cmd:				# Command specified
    com.write(cmd+'\r');
-  
+
   tmoCnt = 5;
   for i in range(0, 200):
    s = com.readline();
@@ -99,18 +107,17 @@ def WaitReply(com, cmd=""):
    if s == "":
      tmoCnt = tmoCnt-1
      if tmoCnt == 0:
-#       sys.exit("Timeout waiting for reply to command \""+cmd+"\"");
        raise PortError(com.port)
 
-   if s and not re.search('^Temp\[*', s):
-    sys.stdout.write("Re:\""+s+"\"\r\n");
- 
+#   if s and not re.search('^Temp\[*', s):
+#    sys.stdout.write("Re:\""+s+"\"\r\n");
+
    if s and not re.search('AT.*', s):	# Not "AT..." echo returned
     if s == "OK":			# "OK" (end of output)
      return r;				# so return accumulated array
     else:
      r.append(s);
-   
+
   sys.exit("Too many lines received in reply to command \""+cmd+"\"");
 
  except OSError, ex:
@@ -159,7 +166,7 @@ def GetCurrentLowFanMode(com):
 def GetCurrentBlindsMode(com):
  s = WaitReply(com, 'ATSRVR')[0]
  t=re.search('.*:(.+)', s);
- if t: 
+ if t:
   r = t.group(1);
  else:
   r = 'N/A'
@@ -167,34 +174,42 @@ def GetCurrentBlindsMode(com):
  return r;
 
 
-def GetRoomT_FridgeT():
- global comC, LastRoomT
+# Return current temperatures
+# xt,rt,ft = GetTemperatures()
+def GetTemperatures():
+ global comC
+ extT = 0
  roomT = 0
  fridgeT = 0
 
  for i in range(3):
-   try:  
+   try:
      l = WaitReply(comC, "ATTS")
-     if re.search('Key', l[0]):      
+     if re.search('Key', l[0]):
        break
    except PortError, x:
      Reconnect(x)
 
  for i in range(len(l)):
-   m = re.search('30274600000056.*T=(\d*\.\d*)',l[i])
+   m = re.search('30274600000056.*T=(\d*\.\d*)',l[i])   # Room temperature
    if m:
      t = float(m.group(1))
-     LastRoomT = t
      roomT = t
 
-   m = re.search('AA8E5B02080074.*T=(\d*\.\d*)',l[i])
+   m = re.search('AA8E5B02080074.*T=(\d*\.\d*)',l[i])   # Fridge temperature (now just outside)
    if m:
      t = float(m.group(1))
      fridgeT = t
 
+   m = re.search('7C519F0008004B.*T=(\d*\.\d*)',l[i])   # External temperature
+   if m:
+     t = float(m.group(1))
+     extT = t
+
+ print('Current XT:%f'%extT)
  print('Current RT:%f'%roomT)
  print('Current FT:%f'%fridgeT)
- return roomT, fridgeT
+ return extT, roomT, fridgeT
 
 
 def GetBaroP():
@@ -203,7 +218,7 @@ def GetBaroP():
 
  s = WaitReply(comR, 'ATBARO')[0]
  t=re.search('.*P:(.+)', s);
- if t: 
+ if t:
   BaroP = float(t.group(1));
   BaroP = BaroP * 0.00750061561303	# Convert Pa to mmHg
  else:
@@ -225,8 +240,8 @@ def GetRoomTargetT():
 
 
 # Read external temperature data
-def GetExtTemp():
- global comC 
+def GetExtTempQQ():
+ global comC
 
  Temp_reply = WaitReply(comC, 'ATG');		# Read ext temperature data
  Temp = [];
@@ -243,7 +258,8 @@ def GetExtTemp():
 
 
 #
-# CondCtl html page header
+# Main html page header
+# (with auto-refresh)
 #
 HdrHtml = """
   <!DOCTYPE html
@@ -264,6 +280,9 @@ HdrHtml = """
 		 <body>
 """
 
+#
+# Settings page header
+#
 SettingsHdrHtml = """
   <!DOCTYPE html
    PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN"
@@ -282,51 +301,22 @@ SettingsHdrHtml = """
 		 <body>
 """
 
-
-MainFormHtml = """
+#
+# Main control form template
+#
+MainFormHtmlTemplate = """
 <img SRC="/cgi-bin/genimg">
 <form>
 <table cellpadding=5 cellspacing=5 border=1>
 <tr><td>Mode: </td>    <td> %s</td><td><INPUT TYPE=submit NAME='CondCtlMode' VALUE='Off'><INPUT TYPE=submit NAME='CondCtlMode' VALUE='On'></td></tr>
-<tr><td>T:%4.1f/%4.1f </td><td></td><td><INPUT TYPE=submit NAME='TargetT' VALUE='-'><INPUT TYPE=submit NAME='TargetT' VALUE='+'></td></tr>
-<tr><td>High Fan: </td><td> %s</td><td><INPUT TYPE=submit NAME='HighFanMode' VALUE='Off'><INPUT TYPE=submit NAME='HighFanMode' VALUE='On'><INPUT TYPE=submit NAME='HighFanMode' VALUE='Forced'></td></tr>
+<tr><td>T:%4.1f/%4.1f,%4.1f</td><td>%s</td><td><INPUT TYPE=submit NAME='TargetT' VALUE='-'><INPUT TYPE=submit NAME='TargetT' VALUE='+'></td></tr>
+<tr><td>Fan: </td><td> %s</td><td><INPUT TYPE=submit NAME='HighFanMode' VALUE='Off'><INPUT TYPE=submit NAME='HighFanMode' VALUE='On'><INPUT TYPE=submit NAME='HighFanMode' VALUE='Forced'></td></tr>
 <tr><A href="/cgi-bin/settings">Settings</A></tr>
 <tr><td>Blinds: </td>  <td> %s</td><td><INPUT TYPE=submit NAME='BlindsMode'  VALUE='88'> <INPUT TYPE=submit NAME='BlindsMode' VALUE='90'><INPUT TYPE=submit NAME='BlindsMode' VALUE='95'><INPUT TYPE=submit NAME='BlindsMode' VALUE='100'></td></tr>
 </table>
 </form>
 %s
 """
-
-EventHtmlTemplate = """<tr> 
-<td> <input name="EvEn_%%" type="checkbox"  value="enable"> Enable</td> 
-<td> <input name="EvTi_%%"   type="time"      value="12:01:00;"></td>
-<td> 
-<input name="EvD0_%%"   type="checkbox"  value="enable">
-<input name="EvD1_%%"   type="checkbox"  value="enable">
-<input name="EvD2_%%"   type="checkbox"  value="enable">
-<input name="EvD3_%%"   type="checkbox"  value="enable">
-<input name="EvD4_%%"   type="checkbox"  value="enable">
-<input name="EvD5_%%"   type="checkbox"  value="enable">
-<input name="EvD6_%%"   type="checkbox"  value="enable"></td> 
-<td>
-<select name="EvTy_%%">
-<option value="On">On</option>
-<option value="Off">Off</option>
-<option value="SetT">SetT</option>
-</select></td>
-<td>
-<select name="EvT_%%">
-<option value="18">18</option>
-<option value="19">19</option>
-<option value="20">20</option>
-<option value="21">21</option>
-<option value="22">22</option>
-<option value="23">23</option>
-<option value="24">24</option>
-</select></td>
-<td><INPUT TYPE=submit NAME="Delete_%%" value="Delete"></td>
-</tr>"""
-
 
 
 #
@@ -336,25 +326,109 @@ EventHtmlTemplate = """<tr>
 #	port, cmd - Ignored (just for generic command compatibility)
 #
 def MasterOff(port, cmd):
-  global comC, comR
-  WaitReply(comC, 'AT*MOD=0')	# Switch CondCtl off
-  WaitReply(comR, 'ATAC=0')	# Switch AC off
+  global comC, comR, LockCfg
+  WaitReply(comC, 'AT*MOD=0')	 # Switch CondCtl off
+  with LockCfg:
+    if CfgAcCtlEnabled:
+       WaitReply(comR, 'ATAC=0') # Switch AC off
 
+#
+# MasterOn() - Enable all climate control functions
+# Inputs:
+#
+#	port, cmd - Ignored (just for generic command compatibility)
+#
+def MasterOn(port, cmd):
+  global comC, comR, LockCfg, CfgTemp
+  WaitReply(comC, 'AT*MOD=3')	 # Switch CondCtl off
+  with LockCfg:
+    if CfgAcCtlEnabled:
+       WaitReply(comR, 'ATAC=%d'%CfgTemp) # Switch AC on, set temperature
+
+
+# Event types and mapping of select strings to them
+class EvType:
+  Off, On, SetT, SetB88, SetB100 = range(0, 5)
+
+Select2evType = { 'Off':EvType.Off, 'On':EvType.On, 'SetT':EvType.SetT, 'SetB88':EvType.SetB88, 'SetB100':EvType.SetB100 }
+
+class SchedEvent:
+  evEnabled = False
+  evTime = datetime.time(0, 0)
+  evDays = 0x7F
+  evType = EvType.Off
+  evTemp = 0
+
+#  def Execute(self):
+#    return
+#    if self.evType == EvType.Off:
+#      MasterOff(0,'')
+#    elif self.evType == EvType.On:
+#      MasterOn(0,'')
+#    elif self.evType == EvType.SetT:
+#      qqqq
+#    elif self.evType == EvType.SetB88:
+#    elif self.evType == EvType.SetB100:
+
+
+  def GenerateString(self):
+    r = "";
+    if self.evEnabled:
+      r += '[X]'
+    else:
+      r += '[ ]'
+
+    r += " %02d:%02d"%(self.evTime.hour, self.evTime.minute)
+    r += " %02X "%(self.evDays)
+
+    for (s, t) in (s, t) in Select2evType.iteritems():
+       if t == self.evType:
+          r += s
+          break
+    r += " %02d"%self.evTemp
+    return r
+
+
+  def GenerateFormString(self, id):
+    r = """<tr>"""
+    r += """<td> <input name="EvEn_#id#" type="checkbox"  value="True" %s> Enable</td>"""%("checked" if self.evEnabled else '')+"\n"
+    r += """<td> <input name="EvTi_#id#" type="time" value="%02d:%02d"></td>"""%(self.evTime.hour, self.evTime.minute)+"\n"
+    r += """<td>"""+"\n"
+    t = 1
+    for i in range(0, 7):
+      r += """<input name="EvD%d_#id#"   type="checkbox"  value="True" %s>"""%(i, "checked" if (self.evDays & t) != 0 else '')+"\n"
+      t <<= 1
+    r += """</td>"""+"\n"
+    r += """<td>"""
+    r += """<select name="EvTy_#id#">"""+"\n"
+
+    for s in ['Off','On','SetT','SetB88','SetB100']:	# Use convenient ordering instead of arbitrary dictionary enumeration
+      r += """<option %s>%s</option>"""%("selected" if Select2evType[s] == self.evType else '', s)+"\n"
+    r += """</select></td>"""+"\n"
+    r += """</td>"""+"\n"
+    r += """<td>"""+"\n"
+    r += """<select name="EvT_#id#">"""+"\n"
+    for t in range(16,26):
+      r += """<option %s>%d</option>"""%("selected" if self.evType == EvType.SetT and self.evTemp == t else '', t)+"\n"
+    r += """</select></td>"""+"\n"
+    r += """<td> <button TYPE=submit NAME="Del" value="#id#">Del</button></td>"""+"\n"
+    r = r.replace("#id#", str(id))	# Set event index into parameter names
+    return r
 
 
 #
 # Main WSGI application handler
 #
 def application(environ, start_response):
- global comC, comR, LockC, LockR, RoomT, FridgeT, BaroP
+ global comC, comR, LockC, LockR, LockCfg, RoomT, FridgeT, BaroP
 
- def GenImg(comC, comR):
+ def GenImg():
+  global comC, comR
 
-  (Temp,h,m,s) = GetExtTemp()
+#  (Temp,h,m,s) = GetExtTemp()
 
   # Generate plot
-  stepX = 3
-  sizeX = 120*stepX;
+  sizeX = 120*3;
   sizeY = 200;
 
   img = Image.new("RGB", (sizeX, sizeY), "#FFFFFF");
@@ -379,41 +453,41 @@ def application(environ, start_response):
 
   draw.line([0, sizeY/2, sizeX-1, sizeY/2], fill=black, width=1);
 
-  curPos = (h*60*60+m*60+s)*sizeX / (24*60*60);
-  draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=1);
-
   tim = datetime.datetime.now()
-  curNdx = (tim.hour * 60 + tim.minute)/12
+  curPos = (tim.hour*60*60+tim.minute*60+tim.second)*sizeX / (24*60*60)
+  curNdx = (tim.hour*60 + tim.minute)/(12/3)
+
+  draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=1)
+
   r = 3
-  draw.ellipse([curPos-r, sizeY/2-Temp[curNdx]*3-r, curPos+r, sizeY/2-Temp[curNdx]*3+r], outline=lineColor)
-  draw.ellipse([curPos-r, sizeY/2-((LastRoomT-20)*2)*3-r, curPos+r, sizeY/2-((LastRoomT-20)*2)*3+r], outline=lineIColor)
-  
-  nSamples = 120;
-
-  for i in range(nSamples-1):
-   draw.line([i*sizeX/nSamples, sizeY/2-PrevExtT[1][i]*3, 
-             (i+1)*sizeX/nSamples, sizeY/2-PrevExtT[1][i+1]*3], fill=(190,190,255), width=1);
-
-  for i in range(nSamples-1):
-   draw.line([i*sizeX/nSamples, sizeY/2-PrevExtT[0][i]*3, 
-             (i+1)*sizeX/nSamples, sizeY/2-PrevExtT[0][i+1]*3], fill=(130,130,255), width=1);
-
-  for i in range(nSamples-1):
-   draw.line([i*sizeX/nSamples, sizeY/2-Temp[i]*3, 
-             (i+1)*sizeX/nSamples, sizeY/2-Temp[i+1]*3], fill=lineColor, width=1);
+  draw.ellipse([curPos-r, sizeY/2-ExtT[curNdx]*3-r, curPos+r, sizeY/2-ExtT[curNdx]*3+r], outline=lineColor)
+  draw.ellipse([curPos-r, sizeY/2-((RoomT[curNdx]-20)*2)*3-r, curPos+r, sizeY/2-((RoomT[curNdx]-20)*2)*3+r], outline=lineIColor)
 
   nSamplesR = 120 * 3
+
+#  for i in range(nSamplesR-1):
+#   draw.line([i*sizeX/nSamplesR, sizeY/2-PrevExtT[1][i]*3,
+#             (i+1)*sizeX/nSamplesR, sizeY/2-PrevExtT[1][i+1]*3], fill=(190,190,255), width=1);
+
+#  for i in range(nSamplesR-1):
+#   draw.line([i*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i]*3,
+#             (i+1)*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i+1]*3], fill=(130,130,255), width=1);
+
+  for i in range(nSamplesR-1):
+   draw.line([i*sizeX/nSamplesR, sizeY/2-ExtT[i]*3,
+             (i+1)*sizeX/nSamplesR, sizeY/2-ExtT[i+1]*3], fill=lineColor, width=1);
+
   for i in range(nSamplesR):
    draw.point([i*sizeX/nSamplesR, sizeY/2-FridgeT[i]*3], fill=(255,200,255));
-  
+
   for i in range(nSamplesR):
    draw.point([i*sizeX/nSamplesR, sizeY/2-((RoomT[i]-20)*2)*3], fill=lineIColor);
 
   for i in range(nSamplesR):
    draw.point([i*sizeX/nSamplesR, sizeY/2-(BaroP[i]-760-10)*3], fill=(224,86,27));
 
-  
-  draw.text([2,2], "%02d:%02d:%02d"%(h,m,s),  fill=strobeColor);
+
+  draw.text([2,2], "%02d:%02d:%02d"%(tim.hour, tim.minute, tim.second), fill=strobeColor);
 
   f = cStringIO.StringIO()
   img.save(f, "PNG")
@@ -422,40 +496,105 @@ def application(environ, start_response):
 
   return [f.getvalue()]
 
-
- def EventHtml():
-  r = EventHtmlTemplate
-  r = r.replace("%%", "0");
-  return r
-
-
+#
+# SettingsPage() - Handle settings page, setting global configuration parameters
+#
  def SettingsPage():
-  r = [SettingsHdrHtml]		# Output html header
+  global CfgAcCtlEnabled, CfgEvents, LockCfg
 
+  # Parse configuration parameters, if any
+
+  params = parse_qs(environ.get('QUERY_STRING', ''))
+
+  if 'Add' in params:		# Add new event
+    with LockCfg:
+      CfgEvents.append(SchedEvent())
+
+  elif 'Del' in params:		# Delete requested
+    i = int(params['Del'][0])
+    with LockCfg:
+      del CfgEvents[i]
+
+
+  elif 'Save' in params:	# Save requested
+    with LockCfg:
+      if 'ControlAC' in params:
+        CfgAcCtlEnabled = True
+      else:
+        CfgAcCtlEnabled = False
+
+      for i in range(len(CfgEvents)):
+        CfgEvents[i].evEnabled = False
+        CfgEvents[i].evDays = 0
+
+      for key in params:
+        m = re.search('(.*)_(.*)', key)
+        if m:			# Match -- "indexed" name, must belong to scheduler event
+          name = m.group(1)
+          i = int(m.group(2))
+          if i >= len(CfgEvents):
+            break
+          if name == 'EvEn':
+            CfgEvents[i].evEnabled = True
+          else:
+            val = escape(params[key][0])
+            if name == 'EvTi':
+              m2 = re.search('(.*):(.*)', val)
+              if m2:
+                CfgEvents[i].evTime = datetime.time(int(m2.group(1)), int(m2.group(2)))
+            elif name == 'EvTy':
+              if val in Select2evType:
+                CfgEvents[i].evType = Select2evType[val]
+              else:
+                CfgEvents[i].evType = EvType.Off
+            elif name == 'EvT':
+              for t in range(16,26):
+                if str(t) == val:
+                  CfgEvents[i].evTemp = t
+            else:
+              m = re.search('EvD(.*)_(.*)', key)
+              if m:
+                CfgEvents[i].evDays |= 1 << int(m.group(1))
+
+    # Saving parameters, save active configuration to file
+    sh = shelve.open('condsrv',writeback=True)
+    sh['CfgAcCtlEnabled'] = CfgAcCtlEnabled
+    sh['CfgEvents'] = CfgEvents
+    sh.close()
+
+
+  # Generate HTML page, using current configuration
+  r = [SettingsHdrHtml]
+
+  # Generate form
   r.append("""<form>""")
-  r.append("""<input type="checkbox" name="ControlAC" value="ControlACOn"> Control AC""")
+  r.append("""<input type="checkbox" name="ControlAC" value="On" %s> Control AC"""%("checked" if CfgAcCtlEnabled else '')+"\n")
   r.append("""<table cellpadding=2 cellspacing=2 border=1>""")
-  r.append(EventHtml())
+  for i in range(len(CfgEvents)):
+    r.append(CfgEvents[i].GenerateFormString(i))
   r.append("""</table>""")
+  r.append("""<INPUT TYPE=submit NAME="Add" value="Add">""")
   r.append("""<INPUT TYPE=submit NAME="Save" value="Save">""")
   r.append("""</form>""")
   return r
 
- def CondCtl(comC, comR):
+
+ def CondCtl():
+  global comC, comR
 
   def TargetTInc(com, cmd):
    t = GetRoomTargetT()
    t = t + 0.5
    WaitReply(com, 'AT*TGN=%d'%(t*10))
-   
+
 
   def TargetTDec(com, cmd):
    t = GetRoomTargetT()
    t = t - 0.5
    WaitReply(com, 'AT*TGN=%d'%(t*10))
-  
+
   commandMap = [
-   ('CondCtlMode', 'On',    WaitReply, 'AT*MOD=3', comC),
+   ('CondCtlMode', 'On',    MasterOn,   '',	   0),
    ('CondCtlMode', 'Off',   MasterOff,  '',	   0),
    ('TargetT',     '+',     TargetTInc, '',        comC),
    ('TargetT',     '-',     TargetTDec, '',        comC),
@@ -475,7 +614,7 @@ def application(environ, start_response):
   params = parse_qs(environ.get('QUERY_STRING', ''))
   for t in commandMap:
    (name, value, fnc, cmd, port) = t
-   if name in params: 
+   if name in params:
     if value == escape(params[name][0]):
      fnc(port, cmd)
 
@@ -484,7 +623,7 @@ def application(environ, start_response):
 #    WaitReply(comR, 'ATIRPM=2000');
 #    WaitReply(comR, 'ATDLY=500');
 #    WaitReply(comR, 'ATIRPM=200');
-  
+
   # Read bandwidth monitor log file, include last line from it
   fileHandle = open('/root/ckbw.log',"r")
   lineList = fileHandle.readlines()
@@ -496,12 +635,14 @@ def application(environ, start_response):
 
   # Prepare html header and the rest of the page
   r = [HdrHtml]		# Output html header
-  r.append(MainFormHtml%(GetCurrentMode(comC), 
-           	     GetRoomT_FridgeT()[0], GetRoomTargetT(),
-                     GetCurrentHighFanMode(comC), 
-                     GetCurrentBlindsMode(comR),
-                     recentRate))
-  
+  xt,rt,ft = GetTemperatures()
+  s = '00'
+  r.append(MainFormHtmlTemplate%(GetCurrentMode(comC),
+                                 rt, GetRoomTargetT(), xt, s,
+                                 GetCurrentHighFanMode(comC),
+                                 GetCurrentBlindsMode(comR),
+                                 recentRate))
+
   # Sync time with CondCtl
   t=time.localtime()
   WaitReply(comC, "AT*TMH=%d"%t.tm_hour)
@@ -510,52 +651,50 @@ def application(environ, start_response):
   WaitReply(comC, "AT*TMW=%d"%t.tm_wday)
   return r
 
-########## 
+########## Main web server entry
 
  path = environ.get('PATH_INFO', '').lstrip('/')
- r =["N/A"] 
+ r =["N/A"]
+
  if path == 'cgi-bin/genimg':
   start_response('200 OK', [('Content-type', 'image/png')])
 
   for i in range(3):
    try:
-    r = GenImg(comC, comR)
+    r = GenImg()
    except PortError, x:
     Reconnect(x)
    else:
     break;
-
   return r
- else:
 
-  if path == 'cgi-bin/settings':
-   start_response('200 OK', [('Content-Type','text/html; charset=ISO-8859-1')])   
-   r = SettingsPage()
-   return r
-  else:
+ elif path == 'cgi-bin/settings':
+  start_response('200 OK', [('Content-Type','text/html; charset=ISO-8859-1')])
+  r = SettingsPage()
+  return r
 
-   if path != 'cgi-bin/condctl':
-    start_response('404 NOT FOUND', [('Content-Type', 'text/html; charset=ISO-8859-1')])
-    return ['Not Found']
+ elif path == 'cgi-bin/condctl':
+  start_response('200 OK', [('Content-Type','text/html; charset=ISO-8859-1')])
+  for i in range(3):
+   try:
+    r = CondCtl()
+   except PortError, x:
+    Reconnect(x)
    else:
-    start_response('200 OK', [('Content-Type','text/html; charset=ISO-8859-1')])
- 
-    for i in range(3):
-     try:
-      r = CondCtl(comC, comR)
-     except PortError, x:
-      Reconnect(x)
-     else:
-      break;
+    break;
+  return r
 
-    return r
- 
+ else:
+  start_response('404 NOT FOUND', [('Content-Type', 'text/html; charset=ISO-8859-1')])
+  return ['Not Found']
+
+
 def FindPort(name, rate):
  pdir = glob.glob(name)
  com = None
  s = "<None>"
  for s in pdir:
-  try:  
+  try:
    com = OpenPort(s, rate);
   except serial.serialutil.SerialException:
    print "...failed opening port at \"%s\""%s;
@@ -565,46 +704,68 @@ def FindPort(name, rate):
  return (com, s)
 
 
-#
+# ===========================================
 # Service thread class
-#  -- gathering room temperature statistics, other service actions
-#
+#  -- gathering room temperature statistics, scheduler, other service actions
+# ===========================================
 class ServiceThreadClass(threading.Thread):
- def run(self): 
+ def run(self):
   global RoomT, PrevExtT
   print("["+DateTime()+"] Service thread started")
 
   recentDay = datetime.datetime.now().day
-  
+  recentSampling = datetime.datetime.now()
+  recentTime = recentSampling
+
   while 1:
-    # Sample room & fridge temperature, store into the history array
-    rt,ft = GetRoomT_FridgeT()
-    tim = datetime.datetime.now()
-    ndx = (tim.hour * 60 + tim.minute)/(12/3)
-    RoomT[ndx] = rt
-    FridgeT[ndx] = ft
 
-    # Sample baro pressure
-    p = GetBaroP()
-    BaroP[ndx] = p
+    # Handle scheduler events
+    newTime = datetime.datetime.now()
+    today = datetime.date.today()
+    with LockCfg:
+      for evt in CfgEvents:
+         if evt.evEnabled and ((1 << newTime.weekday()) & evt.evDays) != 0:
+           eventTime = datetime.datetime.combine(today, evt.evTime)
+           if eventTime > recentTime and eventTime <= newTime:
+              print("["+DateTime()+"] Event triggered: "+evt.GenerateString())
+#              evt.Execute()
 
-    print("["+DateTime()+"] Room T: %f, Baro P: %f"%(rt, p))
+    recentTime = newTime
 
 
-    # Dump external temperature for the last 24hrs once after midnight, shift last days graphs
-    if recentDay != datetime.datetime.now().day:
-      recentDay = datetime.datetime.now().day
-      (Temp,h,m,s) = GetExtTemp()
-      PrevExtT[1] = PrevExtT[0]
-      PrevExtT[0] = Temp
-      logT = open('/www/cgi-bin/ext_temp.log',"a+")
-      strTemp = map(lambda(x): str(x)+' ', Temp)
-      logT.write("["+DateTime()+"] ")
-      logT.writelines(strTemp[0:120])
-      logT.write('\n')
-      logT.close()
-   
-    time.sleep(12/3*60) # Sleep for 12/3 minutes, till the next measurement
+    # Handle periodic sampling for graphs
+    newSampling = datetime.datetime.now()
+    if (newSampling - recentSampling).total_seconds() >= 12/3*60:	# 12/3 minutes passed, sample for graphs
+      recentSampling = newSampling
+
+      # Sample room & fridge temperature, store into the history array
+      xt,rt,ft = GetTemperatures()
+      tim = datetime.datetime.now()
+      ndx = (tim.hour * 60 + tim.minute)/(12/3)
+      RoomT[ndx] = rt
+      FridgeT[ndx] = ft
+      ExtT[ndx] = xt
+
+      # Sample baro pressure
+      p = GetBaroP()
+      BaroP[ndx] = p
+
+      print("["+DateTime()+"] Room T: %f, Baro P: %f"%(rt, p))
+
+      # After midnight, once: Dump external temperature for the last 24hrs, shift last days graphs
+      if recentDay != datetime.datetime.now().day:
+        recentDay = datetime.datetime.now().day
+
+        PrevExtT[1] = PrevExtT[0]
+        PrevExtT[0] = ExtT
+        logT = open('/www/cgi-bin/ext_temp.log',"a+")
+        strTemp = map(lambda(x): str(x)+' ', Temp)
+        logT.write("["+DateTime()+"] ")
+        logT.writelines(strTemp[0:120])
+        logT.write('\n')
+        logT.close()
+
+    time.sleep(60) # Sleep for 1 minute
 
 
 # ===========================================
@@ -613,19 +774,36 @@ class ServiceThreadClass(threading.Thread):
 
 print "\n*** CondSrv home CondCtl and other peripherals WSGI server ***"
 
-# Create lock objects for accessing comC and comR
+# Create lock objects for accessing comC, comR and configuration state
 LockC = threading.Lock();
 LockR = threading.Lock();
+LockCfg = threading.Lock();
 
 # Create lists for various measurements
 # 120*3 total, 15 per hour
+ExtT = [0. for i in range(120*3+1)]
 RoomT = [0. for i in range(120*3+1)]
 FridgeT = [0. for i in range(120*3+1)]
 BaroP = [0. for i in range(120*3+1)]
 
-# Create list fpr saved previous days external measurements
-# 120 total, 5 per hour
-PrevExtT = [[0. for i in range(120+1)] for j in range(2)]
+# Create list for saved previous days external measurements
+# 120 total, 15 per hour
+PrevExtT = [[0. for i in range(120*3+1)] for j in range(2)]
+
+# Read global configuration variables from the database
+print "["+DateTime()+"] Loading configuration"
+sh = shelve.open('condsrv')
+if 'CfgAcCtlEnabled' in sh:
+  CfgAcCtlEnabled = sh['CfgAcCtlEnabled']
+  print "["+DateTime()+"]  global state loaded"
+else:
+  print "["+DateTime()+"]  no global state loaded"
+if 'CfgEvents' in sh:
+  CfgEvents=sh['CfgEvents']
+  print "["+DateTime()+"]  scheduler events loaded"
+else:
+  print "["+DateTime()+"]  no scheduler events loaded"
+sh.close()
 
 # Load previous day external temperatures from log
 print "["+DateTime()+"] Loading previous day temperatures"
@@ -646,7 +824,7 @@ if t:
   t = t.group(1).split(' ')
   PrevExtT[1] = map(lambda(x): int(x), t)
 
-# Find and open peripheral com ports 
+# Find and open peripheral com ports
 (comC, nameC) = FindPort("/dev/ttyUSB*", 38400)
 (comR, nameR) = FindPort("/dev/ttyACM*", 9600)
 
@@ -669,10 +847,10 @@ WaitReply(comC, "AT*ECB=200")
 #
 # Start service thread for internal room statistics and aux control
 #
-ServiceThread = ServiceThreadClass();
-ServiceThread.start();
+ServiceThread = ServiceThreadClass()
+ServiceThread.start()
 
-# 
+#
 # Create and start web server
 #
 srv = make_server('10.0.0.126', 80, application)
