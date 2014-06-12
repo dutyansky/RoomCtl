@@ -32,14 +32,21 @@ from wsgiref.simple_server import (make_server, WSGIRequestHandler)
 # Global configuration parameters
 #
 CfgAcCtlEnabled = False	# AC control enabled
-CfgTemp = 0		# Target room temperature
-CfgEvents = []		# Scheduler events
+CfgEvents = []          # Scheduler events
 
-ExtT = []    # List of external temperatures [120*3]
-PrevExtT = []   # List of previous days external temperatures [2][120*3]
-RoomT = []	# List of room temperatures for current day [120*3]
-BaroP = []	# List of baro pressures for current day [120*3]
-FridgeT = []	# List of fridge temperatures for current day [120*3]
+#
+# Global state variables
+#
+ExtT = []               # List of external temperatures [120*3]
+PrevExtT = []           # List of previous days external temperatures [2][120*3]
+RoomT = []              # List of room temperatures for current day [120*3]
+BaroP = []              # List of baro pressures for current day [120*3]
+FridgeT = []            # List of fridge temperatures for current day [120*3]
+ClimateHist = []        # List of climate on/off states
+LastExtT, LastRoomT, LastFridgeT = 0,0,0 # Recent temperature measurements
+ClimateOn = False       # "Climate control on" state
+TargetTemp = 0          # Target room temperature
+
 
 # Format: "31/Dec/2012 15:31:16"
 def DateTime():
@@ -136,8 +143,9 @@ def WaitReply(com, cmd=""):
 #
 # Helper functions for getting various peripheral states
 #
-def GetCurrentMode(com):
- t=re.search('.*\]=(.+)', WaitReply(com, 'AT*mod$')[0]);
+def GetCurrentMode():
+ global comC
+ t=re.search('.*\]=(.+)', WaitReply(comC, 'AT*mod$')[0]);
  if t:
   r = 'On' if t.group(1) == '3' else 'Off'
  else:
@@ -178,6 +186,7 @@ def GetCurrentBlindsMode(com):
 # xt,rt,ft = GetTemperatures()
 def GetTemperatures():
  global comC
+ global LastExtT, LastRoomT, LastFridgeT
  extT = 0
  roomT = 0
  fridgeT = 0
@@ -209,6 +218,9 @@ def GetTemperatures():
  print('Current XT:%f'%extT)
  print('Current RT:%f'%roomT)
  print('Current FT:%f'%fridgeT)
+ LastExtT = extT
+ LastRoomT = roomT
+ LastFridgeT = fridgeT
  return extT, roomT, fridgeT
 
 
@@ -228,13 +240,14 @@ def GetBaroP():
 
 
 def GetRoomTargetT():
- global comC
+ global comC, CfgTemp, TargetTemp
 
  t=re.search('.*\]=(.+)', WaitReply(comC, 'AT*TGN$')[0]);
  if t:
   r = int(t.group(1))/10.
  else:
   r = 0.
+ TargetTemp = r
  print ('Current TT:%f |'+t.group(1))%r
  return r;
 
@@ -309,7 +322,7 @@ MainFormHtmlTemplate = """
 <form>
 <table cellpadding=5 cellspacing=5 border=1>
 <tr><td>Mode: </td>    <td> %s</td><td><INPUT TYPE=submit NAME='CondCtlMode' VALUE='Off'><INPUT TYPE=submit NAME='CondCtlMode' VALUE='On'></td></tr>
-<tr><td>T:%4.1f/%4.1f,%4.1f</td><td>%s</td><td><INPUT TYPE=submit NAME='TargetT' VALUE='-'><INPUT TYPE=submit NAME='TargetT' VALUE='+'></td></tr>
+<tr><td>T:%4.1f/%4.1f,%d</td><td>%4.1f</td><td><INPUT TYPE=submit NAME='TargetT' VALUE='-'><INPUT TYPE=submit NAME='TargetT' VALUE='+'></td></tr>
 <tr><td>Fan: </td><td> %s</td><td><INPUT TYPE=submit NAME='HighFanMode' VALUE='Off'><INPUT TYPE=submit NAME='HighFanMode' VALUE='On'><INPUT TYPE=submit NAME='HighFanMode' VALUE='Forced'></td></tr>
 <tr><A href="/cgi-bin/settings">Settings</A></tr>
 <tr><td>Blinds: </td>  <td> %s</td><td><INPUT TYPE=submit NAME='BlindsMode'  VALUE='88'> <INPUT TYPE=submit NAME='BlindsMode' VALUE='90'><INPUT TYPE=submit NAME='BlindsMode' VALUE='95'><INPUT TYPE=submit NAME='BlindsMode' VALUE='100'></td></tr>
@@ -323,11 +336,12 @@ MainFormHtmlTemplate = """
 # MasterOff() - Disable all climate control functions
 # Inputs:
 #
-#	port, cmd - Ignored (just for generic command compatibility)
+#       Ignored
 #
-def MasterOff(port, cmd):
-  global comC, comR, LockCfg
+def MasterOff(a, b):
+  global comC, comR, LockCfg, CfgAcCtlEnabled
   WaitReply(comC, 'AT*MOD=0')	 # Switch CondCtl off
+  ClimateOn = False
   with LockCfg:
     if CfgAcCtlEnabled:
        WaitReply(comR, 'ATAC=0') # Switch AC off
@@ -336,14 +350,15 @@ def MasterOff(port, cmd):
 # MasterOn() - Enable all climate control functions
 # Inputs:
 #
-#	port, cmd - Ignored (just for generic command compatibility)
+#       Ignored
 #
-def MasterOn(port, cmd):
-  global comC, comR, LockCfg, CfgTemp
-  WaitReply(comC, 'AT*MOD=3')	 # Switch CondCtl off
+def MasterOn(a, b):
+  global comC, comR, LockCfg, CfgTemp, CfgAcCtlEnabled, TargetTemp
+  WaitReply(comC, 'AT*MOD=3')    # Switch CondCtl on
+  ClimateOn = True
   with LockCfg:
     if CfgAcCtlEnabled:
-       WaitReply(comR, 'ATAC=%d'%CfgTemp) # Switch AC on, set temperature
+       WaitReply(comR, 'ATAC=%d'%(int(TargetTemp+0.5)+1)) # Switch AC on, set temperature
 
 
 # Event types and mapping of select strings to them
@@ -428,11 +443,15 @@ def application(environ, start_response):
 #  (Temp,h,m,s) = GetExtTemp()
 
   # Generate plot
-  sizeX = 120*3;
-  sizeY = 200;
+  sizeX = 120*3
+  sizeY = 200
+  sizeYr = 50
 
-  img = Image.new("RGB", (sizeX, sizeY), "#FFFFFF");
+  nSamplesR = 120 * 3
+
+  img = Image.new("RGB", (sizeX, sizeY+sizeYr+4), "#FFFFFF");
   draw = ImageDraw.Draw(img);
+
   white = (255,255,255);
   black = (0,0,0);
   gridColor = (230,230,230);
@@ -453,17 +472,37 @@ def application(environ, start_response):
 
   draw.line([0, sizeY/2, sizeX-1, sizeY/2], fill=black, width=1);
 
+  # Draw bar for on/off states
+  for i in range(len(ClimateHist)-1):
+    draw.rectangle([i*sizeX/nSamplesR, sizeY+sizeYr+1, (i+1)*sizeX/nSamplesR, sizeY+sizeYr+3], outline=(0,0,245) if ClimateHist[i] else white);
+
+  # Grid for room temperature
+  ry0 = sizeY+4+1
+  ry1 = sizeY+sizeYr-2
+
+  def ry(t):
+    return ry1-(t-14.)*(ry1-ry0)/(26-14)
+
+  draw.rectangle([0, sizeY+4, sizeX-1, sizeY+sizeYr-1], outline=black);
+
+  for i in range(15, 26, 1):
+   draw.line([2, ry(i), sizeX-2, ry(i)], fill=gridColor, width=1);
+
+  for i in range(1, 24):
+   draw.line([i*sizeX/24, ry(14), i*sizeX/24, ry(26)], fill=gridColor, width=1);
+
+  draw.line([1, ry(20), sizeX-2, ry(20)], fill=black, width=1);
+
   tim = datetime.datetime.now()
   curPos = (tim.hour*60*60+tim.minute*60+tim.second)*sizeX / (24*60*60)
   curNdx = (tim.hour*60 + tim.minute)/(12/3)
 
   draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=1)
+  draw.line([curPos, sizeY+4, curPos, sizeY+sizeYr-2], fill=strobeColor, width=1)
 
   r = 3
-  draw.ellipse([curPos-r, sizeY/2-ExtT[curNdx]*3-r, curPos+r, sizeY/2-ExtT[curNdx]*3+r], outline=lineColor)
-  draw.ellipse([curPos-r, sizeY/2-((RoomT[curNdx]-20)*2)*3-r, curPos+r, sizeY/2-((RoomT[curNdx]-20)*2)*3+r], outline=lineIColor)
+  draw.ellipse([curPos-r, sizeY/2-LastExtT*3-r, curPos+r, sizeY/2-LastExtT*3+r], outline=lineColor)
 
-  nSamplesR = 120 * 3
 
 #  for i in range(nSamplesR-1):
 #   draw.line([i*sizeX/nSamplesR, sizeY/2-PrevExtT[1][i]*3,
@@ -481,7 +520,10 @@ def application(environ, start_response):
    draw.point([i*sizeX/nSamplesR, sizeY/2-FridgeT[i]*3], fill=(255,200,255));
 
   for i in range(nSamplesR):
-   draw.point([i*sizeX/nSamplesR, sizeY/2-((RoomT[i]-20)*2)*3], fill=lineIColor);
+   draw.point([i*sizeX/nSamplesR, ry(RoomT[i])], fill=lineIColor);
+
+  r = 2
+  draw.ellipse([curPos-r, ry(LastRoomT)-r, curPos+r, ry(LastRoomT)+r], outline=lineIColor)
 
   for i in range(nSamplesR):
    draw.point([i*sizeX/nSamplesR, sizeY/2-(BaroP[i]-760-10)*3], fill=(224,86,27));
@@ -585,12 +627,14 @@ def application(environ, start_response):
   def TargetTInc(com, cmd):
    t = GetRoomTargetT()
    t = t + 0.5
+   TargetTemp = t
    WaitReply(com, 'AT*TGN=%d'%(t*10))
 
 
   def TargetTDec(com, cmd):
    t = GetRoomTargetT()
    t = t - 0.5
+   TargetTemp = t
    WaitReply(com, 'AT*TGN=%d'%(t*10))
 
   commandMap = [
@@ -636,9 +680,9 @@ def application(environ, start_response):
   # Prepare html header and the rest of the page
   r = [HdrHtml]		# Output html header
   xt,rt,ft = GetTemperatures()
-  s = '00'
-  r.append(MainFormHtmlTemplate%(GetCurrentMode(comC),
-                                 rt, GetRoomTargetT(), xt, s,
+
+  r.append(MainFormHtmlTemplate%(GetCurrentMode(),
+                                 rt, GetRoomTargetT(), (int(TargetTemp+0.5)+1), xt,
                                  GetCurrentHighFanMode(comC),
                                  GetCurrentBlindsMode(comR),
                                  recentRate))
@@ -746,6 +790,8 @@ class ServiceThreadClass(threading.Thread):
       FridgeT[ndx] = ft
       ExtT[ndx] = xt
 
+      ClimateHist[ndx] = ClimateOn
+
       # Sample baro pressure
       p = GetBaroP()
       BaroP[ndx] = p
@@ -785,6 +831,7 @@ ExtT = [0. for i in range(120*3+1)]
 RoomT = [0. for i in range(120*3+1)]
 FridgeT = [0. for i in range(120*3+1)]
 BaroP = [0. for i in range(120*3+1)]
+ClimateHist = [False for i in range(120*3+1)]
 
 # Create list for saved previous days external measurements
 # 120 total, 15 per hour
@@ -836,11 +883,22 @@ else:
 if comR:
  print "["+DateTime()+"] Arduino port opened at \"%s\", 9600"%nameR
 else:
- sys.exit("Cannot open Arduino at ttyACM*, exiting");
+ sys.exit("Cannot open Arduino at ttyACM*, exiting")
 
 time.sleep(2);					# Arduino de-glitching/startup
 
 WaitReply(comC, "AT*ECB=200")
+
+# Read current target temperature and mode from CondCtl device
+GetRoomTargetT()
+print "["+DateTime()+("] Target temperature read: %4.1f (AC: %d)"%(TargetTemp, int(TargetTemp+0.5)+1))
+
+if GetCurrentMode() == 'On':
+  MasterOn(0, 0)
+  print "["+DateTime()+"] CondCtl On, setting master on"
+else:
+  MasterOff(0, 0)
+  print "["+DateTime()+"] CondCtl Off, setting master off"
 
 #pdb.set_trace()
 
