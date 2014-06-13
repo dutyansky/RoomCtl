@@ -32,6 +32,8 @@ from wsgiref.simple_server import (make_server, WSGIRequestHandler)
 # Global configuration parameters
 #
 CfgAcCtlEnabled = False	# AC control enabled
+CfgFanOnTime = 0        # Fan on forced time, 0=Disabled
+CfgFanOffTime = 0       # Fan off forced time
 CfgEvents = []          # Scheduler events
 
 #
@@ -43,10 +45,21 @@ RoomT = []              # List of room temperatures for current day [120*3]
 BaroP = []              # List of baro pressures for current day [120*3]
 FridgeT = []            # List of fridge temperatures for current day [120*3]
 ClimateHist = []        # List of climate on/off states
+FanHist = []            # List of fan on/off forced states
 LastExtT, LastRoomT, LastFridgeT = 0,0,0 # Recent temperature measurements
 ClimateOn = False       # "Climate control on" state
+FanOn = False           # Current low-level "forced fan" flag
 TargetTemp = 0          # Target room temperature
+MinutesToFanOn = 0
+MinutesToFanOff = 0
 
+LogHandle = 0
+
+def LogLine(s):
+ s1 = "["+DateTime()+"] "+s
+ LogHandle.write(s1+'\n')
+ LogHandle.flush()
+ print(s1)
 
 # Format: "31/Dec/2012 15:31:16"
 def DateTime():
@@ -87,7 +100,7 @@ def Reconnect(x):
  else:
    (comR, nameX) = FindPort("/dev/ttyACM*", 9600)
  time.sleep(2);
- print("["+DateTime()+"] Error encountered on \""+x.name+"\", reconnected as \""+nameX+"\"");
+ LogLine("Error encountered on \""+x.name+"\", reconnected as \""+nameX+"\"");
 
 
 #
@@ -130,7 +143,7 @@ def WaitReply(com, cmd=""):
  except OSError, ex:
   if ex.errno != 5:
    sys.exit("Unexpected (not errno 5) OSError in WaitReply:\""+ex.strerror+"\"")
-  print "["+DateTime()+"] OSError:5 encountered on \""+com.port+"\""
+  LogLine("OSError:5 encountered on \""+com.port+"\"")
   raise PortError(com.port)
 
  finally:
@@ -139,6 +152,42 @@ def WaitReply(com, cmd=""):
   else:
    if com == comR:
     LockR.release();
+
+#
+# FanCtl() - Control fan and update local state
+#
+def FanCtl(com, s):
+  global FanOn
+  WaitReply(com, s)
+  FanOn = s == 'AT*ENH=2'       # Set to True if forced on
+
+#
+# MasterOff() - Disable all climate control functions
+# Inputs:
+#
+#       Ignored
+#
+def MasterOff(com, s):
+  global comC, comR, LockCfg, CfgAcCtlEnabled, ClimateOn
+  WaitReply(comC, 'AT*MOD=0')	 # Switch CondCtl off
+  with LockCfg:
+    ClimateOn = False
+    if CfgAcCtlEnabled:
+       WaitReply(comR, 'ATAC=0') # Switch AC off
+
+#
+# MasterOn() - Enable all climate control functions
+# Inputs:
+#
+#       Ignored
+#
+def MasterOn(com, s):
+  global comC, comR, LockCfg, CfgTemp, CfgAcCtlEnabled, TargetTemp, ClimateOn
+  WaitReply(comC, 'AT*MOD=3')    # Switch CondCtl on
+  with LockCfg:
+    ClimateOn = True
+    if CfgAcCtlEnabled:
+       WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
 #
 # Helper functions for getting various peripheral states
@@ -153,8 +202,9 @@ def GetCurrentMode():
  print 'Current Mode:'+r;
  return r;
 
-def GetCurrentHighFanMode(com):
- t=re.search('.*\]=(.+)', WaitReply(com, 'AT*ENH$')[0]);
+def GetCurrentHighFanMode():
+ global comC
+ t=re.search('.*\]=(.+)', WaitReply(comC, 'AT*ENH$')[0]);
  if t:
   r = 'Forced' if t.group(1) == '2' else 'On' if t.group(1) == '1' else 'Off'
  else:
@@ -162,8 +212,9 @@ def GetCurrentHighFanMode(com):
  print 'Current HF Mode:'+r;
  return r;
 
-def GetCurrentLowFanMode(com):
- t=re.search('.*\]=(.+)', WaitReply(com, 'AT*ENL$')[0]);
+def GetCurrentLowFanMode():
+ global comC
+ t=re.search('.*\]=(.+)', WaitReply(comC, 'AT*ENL$')[0]);
  if t:
   r = 'Forced' if t.group(1) == '2' else 'On' if t.group(1) == '1' else 'Off'
  else:
@@ -171,8 +222,9 @@ def GetCurrentLowFanMode(com):
  print 'Current LF Mode:'+r;
  return r;
 
-def GetCurrentBlindsMode(com):
- s = WaitReply(com, 'ATSRVR')[0]
+def GetCurrentBlindsMode():
+ global comR
+ s = WaitReply(comR, 'ATSRVR')[0]
  t=re.search('.*:(.+)', s);
  if t:
   r = t.group(1);
@@ -185,8 +237,7 @@ def GetCurrentBlindsMode(com):
 # Return current temperatures
 # xt,rt,ft = GetTemperatures()
 def GetTemperatures():
- global comC
- global LastExtT, LastRoomT, LastFridgeT
+ global comC, LastExtT, LastRoomT, LastFridgeT
  extT = 0
  roomT = 0
  fridgeT = 0
@@ -215,15 +266,12 @@ def GetTemperatures():
      t = float(m.group(1))
      extT = t
 
- print('Current XT:%f'%extT)
- print('Current RT:%f'%roomT)
- print('Current FT:%f'%fridgeT)
  LastExtT = extT
  LastRoomT = roomT
  LastFridgeT = fridgeT
  return extT, roomT, fridgeT
 
-
+# GetBaroP()
 def GetBaroP():
  global comR
  BaroP = 0
@@ -235,10 +283,9 @@ def GetBaroP():
   BaroP = BaroP * 0.00750061561303	# Convert Pa to mmHg
  else:
   BaroP = 0.
-
  return BaroP;
 
-
+# GetRoomTargetT()
 def GetRoomTargetT():
  global comC, CfgTemp, TargetTemp
 
@@ -324,42 +371,38 @@ MainFormHtmlTemplate = """
 <tr><td>Mode: </td>    <td> %s</td><td><INPUT TYPE=submit NAME='CondCtlMode' VALUE='Off'><INPUT TYPE=submit NAME='CondCtlMode' VALUE='On'></td></tr>
 <tr><td>T:%4.1f/%4.1f,%d</td><td>%4.1f</td><td><INPUT TYPE=submit NAME='TargetT' VALUE='-'><INPUT TYPE=submit NAME='TargetT' VALUE='+'></td></tr>
 <tr><td>Fan: </td><td> %s</td><td><INPUT TYPE=submit NAME='HighFanMode' VALUE='Off'><INPUT TYPE=submit NAME='HighFanMode' VALUE='On'><INPUT TYPE=submit NAME='HighFanMode' VALUE='Forced'></td></tr>
-<tr><A href="/cgi-bin/settings">Settings</A></tr>
 <tr><td>Blinds: </td>  <td> %s</td><td><INPUT TYPE=submit NAME='BlindsMode'  VALUE='88'> <INPUT TYPE=submit NAME='BlindsMode' VALUE='90'><INPUT TYPE=submit NAME='BlindsMode' VALUE='95'><INPUT TYPE=submit NAME='BlindsMode' VALUE='100'></td></tr>
+<tr><td><A href="/cgi-bin/settings">Settings</A></td>
+<td></td><td></td>
+</tr>
 </table>
 </form>
 %s
 """
 
 
-#
-# MasterOff() - Disable all climate control functions
-# Inputs:
-#
-#       Ignored
-#
-def MasterOff(a, b):
-  global comC, comR, LockCfg, CfgAcCtlEnabled, ClimateOn
-  WaitReply(comC, 'AT*MOD=0')	 # Switch CondCtl off
-  ClimateOn = False
-  with LockCfg:
-    if CfgAcCtlEnabled:
-       WaitReply(comR, 'ATAC=0') # Switch AC off
+FanOnOffTimes = [1, 2, 5, 10, 20, 30, 40, 60]   # Allowed values for periodic ventilation
 
 #
-# MasterOn() - Enable all climate control functions
-# Inputs:
+# Generate html to control periodic fan on/off
 #
-#       Ignored
-#
-def MasterOn(a, b):
-  global comC, comR, LockCfg, CfgTemp, CfgAcCtlEnabled, TargetTemp, ClimateOn
-  WaitReply(comC, 'AT*MOD=3')    # Switch CondCtl on
-  ClimateOn = True
-  with LockCfg:
-    if CfgAcCtlEnabled:
-       WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+def GenerateCurrentFanOnOffHtmlString():
+ r = """Periodic ventilation, On: <select name="FanPOn">"""
 
+ if CfgFanOnTime == 0:       # First option, for "Not enabled" state
+   r += """<option selected>No</option>"""
+ else:
+   r += """<option>No</option>"""
+
+ for t in FanOnOffTimes:  # Discrete set of selectable on/off times
+   r += """<option %s>%s</option>"""%("selected" if CfgFanOnTime == t else '', str(t))+"\n"
+
+ r += "</select>"
+ r += """ Off: <select name="FanPOff">"""
+ for t in FanOnOffTimes:  # Discrete set of selectable on/off times
+   r += """<option %s>%s</option>"""%("selected" if CfgFanOffTime == t else '', str(t))+"\n"
+ r += "</select>"
+ return r
 
 # Event types and mapping of select strings to them
 class EvType:
@@ -374,18 +417,29 @@ class SchedEvent:
   evType = EvType.Off
   evTemp = 0
 
-#  def Execute(self):
-#    return
-#    if self.evType == EvType.Off:
-#      MasterOff(0,'')
-#    elif self.evType == EvType.On:
-#      MasterOn(0,'')
-#    elif self.evType == EvType.SetT:
-#      qqqq
-#    elif self.evType == EvType.SetB88:
-#    elif self.evType == EvType.SetB100:
+  # Execute event
+  def Execute(self):
+    global comC, comR, LockCfg, TargetTemp, CfgAcCtlEnabled
 
+    if self.evType == EvType.Off:
+      MasterOff(0,'')
 
+    elif self.evType == EvType.On:
+      MasterOn(0,'')
+
+    elif self.evType == EvType.SetT:
+      with LockCfg:
+        TargetTemp = self.evTemp
+        WaitReply(comC, 'AT*TGN=%d'%(TargetTemp*10))
+        if CfgAcCtlEnabled:
+           WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+
+    elif self.evType == EvType.SetB88:
+      WaitReply(comR, 'ATSRV=88')
+    elif self.evType == EvType.SetB100:
+      WaitReply(comR, 'ATSRV=100')
+
+  # Generate self-description string for logs
   def GenerateString(self):
     r = "";
     if self.evEnabled:
@@ -396,14 +450,14 @@ class SchedEvent:
     r += " %02d:%02d"%(self.evTime.hour, self.evTime.minute)
     r += " %02X "%(self.evDays)
 
-    for (s, t) in (s, t) in Select2evType.iteritems():
+    for (s, t) in Select2evType.iteritems():
        if t == self.evType:
           r += s
           break
     r += " %02d"%self.evTemp
     return r
 
-
+  # Generate self-description test for html form
   def GenerateFormString(self, id):
     r = """<tr>"""
     r += """<td> <input name="EvEn_#id#" type="checkbox"  value="True" %s> Enable</td>"""%("checked" if self.evEnabled else '')+"\n"
@@ -435,7 +489,7 @@ class SchedEvent:
 # Main WSGI application handler
 #
 def application(environ, start_response):
- global comC, comR, LockC, LockR, LockCfg, RoomT, FridgeT, BaroP, ClimateHist
+ global comC, comR, LockC, LockR, LockCfg, RoomT, FridgeT, BaroP, ClimateHist, FanHist
 
  def GenImg():
   global comC, comR
@@ -449,7 +503,7 @@ def application(environ, start_response):
 
   nSamplesR = 120 * 3
 
-  img = Image.new("RGB", (sizeX, sizeY+sizeYr+4), "#FFFFFF");
+  img = Image.new("RGB", (sizeX, sizeY+sizeYr+6), "#FFFFFF");
   draw = ImageDraw.Draw(img);
 
   white = (255,255,255);
@@ -475,6 +529,9 @@ def application(environ, start_response):
   # Draw bar for on/off states
   for i in range(len(ClimateHist)-1):
     draw.rectangle([i*sizeX/nSamplesR, sizeY+sizeYr+1, (i+1)*sizeX/nSamplesR, sizeY+sizeYr+3], outline=(0,0,245) if ClimateHist[i] else white)
+
+  for i in range(len(FanHist)-1):
+    draw.rectangle([i*sizeX/nSamplesR, sizeY+sizeYr+4, (i+1)*sizeX/nSamplesR, sizeY+sizeYr+6], outline=(0,245,0) if FanHist[i] else white)
 
   # Grid for room temperature
   ry0 = sizeY+4+1
@@ -542,7 +599,7 @@ def application(environ, start_response):
 # SettingsPage() - Handle settings page, setting global configuration parameters
 #
  def SettingsPage():
-  global CfgAcCtlEnabled, CfgEvents, LockCfg
+  global CfgAcCtlEnabled, CfgEvents, LockCfg, CfgFanOnTime, CfgFanOffTime, MinutesToFanOn
 
   # Parse configuration parameters, if any
 
@@ -557,13 +614,30 @@ def application(environ, start_response):
     with LockCfg:
       del CfgEvents[i]
 
-
   elif 'Save' in params:	# Save requested
     with LockCfg:
       if 'ControlAC' in params:
         CfgAcCtlEnabled = True
       else:
         CfgAcCtlEnabled = False
+
+      if ("FanPOn" in params) and ("FanPOff" in params):
+        value = escape(params["FanPOn"][0])
+        if value == "No":
+          CfgFanOnTime = 0
+          CfgFanOffTime = 0
+        else:
+          if int(value) in FanOnOffTimes:
+            CfgFanOnTime = int(value)
+            value = escape(params["FanPOff"][0])
+            if int(value) in FanOnOffTimes:
+              CfgFanOffTime = int(value)
+            else:
+              CfgFanOnTime = 0
+              CfgFanOffTime = 0
+        print CfgFanOnTime, CfgFanOffTime
+        if CfgFanOnTime != 0:
+          MinutesToFanOn = CfgFanOffTime
 
       for i in range(len(CfgEvents)):
         CfgEvents[i].evEnabled = False
@@ -598,10 +672,15 @@ def application(environ, start_response):
               if m:
                 CfgEvents[i].evDays |= 1 << int(m.group(1))
 
+    # Sort events by time
+    CfgEvents.sort(cmp=lambda x,y:cmp(x.evTime, y.evTime))
+
     # Saving parameters, save active configuration to file
     sh = shelve.open('condsrv',writeback=True)
     sh['CfgAcCtlEnabled'] = CfgAcCtlEnabled
     sh['CfgEvents'] = CfgEvents
+    sh['CfgFanOnTime'] = CfgFanOnTime
+    sh['CfgFanOffTime'] = CfgFanOffTime
     sh.close()
 
 
@@ -610,8 +689,11 @@ def application(environ, start_response):
 
   # Generate form
   r.append("""<form>""")
-  r.append("""<input type="checkbox" name="ControlAC" value="On" %s> Control AC"""%("checked" if CfgAcCtlEnabled else '')+"\n")
+  r.append("""<table cellpadding=2 cellspacing=2 border=1><tr>""")
+  r.append("""<td><input type="checkbox" name="ControlAC" value="On" %s> Control AC"""%("checked" if CfgAcCtlEnabled else '')+"</td>\n")
+  r.append("<td>"+GenerateCurrentFanOnOffHtmlString()+"</td></tr>")
   r.append("""<table cellpadding=2 cellspacing=2 border=1>""")
+  r.append("""<tr>Timed events</tr>""")
   for i in range(len(CfgEvents)):
     r.append(CfgEvents[i].GenerateFormString(i))
   r.append("""</table>""")
@@ -622,36 +704,44 @@ def application(environ, start_response):
 
 
  def CondCtl():
-  global comC, comR
+  global comC, comR, LockCfg, CfgAcCtlEnabled, TargetTemp, CfgFanOnTime, CfgFanOffTime
 
   def TargetTInc(com, cmd):
+   global LockCfg, CfgAcCtlEnabled, TargetTemp
    t = GetRoomTargetT()
    t = t + 0.5
    TargetTemp = t
    WaitReply(com, 'AT*TGN=%d'%(t*10))
+   with LockCfg:
+     if CfgAcCtlEnabled:
+        WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
 
   def TargetTDec(com, cmd):
+   global LockCfg, CfgAcCtlEnabled, TargetTemp
    t = GetRoomTargetT()
    t = t - 0.5
    TargetTemp = t
    WaitReply(com, 'AT*TGN=%d'%(t*10))
+   with LockCfg:
+     if CfgAcCtlEnabled:
+        WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
   commandMap = [
    ('CondCtlMode', 'On',    MasterOn,   '',	   0),
    ('CondCtlMode', 'Off',   MasterOff,  '',	   0),
    ('TargetT',     '+',     TargetTInc, '',        comC),
    ('TargetT',     '-',     TargetTDec, '',        comC),
-   ('HighFanMode', 'On',    WaitReply, 'AT*ENH=1', comC),
-   ('HighFanMode', 'Off',   WaitReply, 'AT*ENH=0', comC),
-   ('HighFanMode', 'Forced',WaitReply, 'AT*ENH=2', comC),
+   ('HighFanMode', 'On',    FanCtl,     'AT*ENH=1', comC),
+   ('HighFanMode', 'Off',   FanCtl,     'AT*ENH=0', comC),
+   ('HighFanMode', 'Forced',FanCtl,     'AT*ENH=2', comC),
    ('LowFanMode',  'On',    WaitReply, 'AT*ENL=1', comC),
    ('LowFanMode',  'Off',   WaitReply, 'AT*ENL=0', comC),
    ('LowFanMode',  'Forced',WaitReply, 'AT*ENL=2', comC),
    ('BlindsMode',  '88',    WaitReply, 'ATSRV=88', comR),
    ('BlindsMode',  '90',    WaitReply, 'ATSRV=90', comR),
    ('BlindsMode',  '95',    WaitReply, 'ATSRV=95', comR),
-   ('BlindsMode',  '100',   WaitReply, 'ATSRV=100',comR)  ]
+   ('BlindsMode',  '100',   WaitReply, 'ATSRV=100',comR) ]
 
 
   # Do configuration if requested (if parameters are present in query string)
@@ -683,10 +773,9 @@ def application(environ, start_response):
 
   r.append(MainFormHtmlTemplate%(GetCurrentMode(),
                                  rt, GetRoomTargetT(), int(TargetTemp), xt,
-                                 GetCurrentHighFanMode(comC),
-                                 GetCurrentBlindsMode(comR),
+                                 GetCurrentHighFanMode(),
+                                 GetCurrentBlindsMode(),
                                  recentRate))
-
   # Sync time with CondCtl
   t=time.localtime()
   WaitReply(comC, "AT*TMH=%d"%t.tm_hour)
@@ -741,7 +830,7 @@ def FindPort(name, rate):
   try:
    com = OpenPort(s, rate);
   except serial.serialutil.SerialException:
-   print "...failed opening port at \"%s\""%s;
+   LogLine("...failed opening port at \"%s\""%s)
    com = None
   else:
    break
@@ -754,13 +843,14 @@ def FindPort(name, rate):
 # ===========================================
 class ServiceThreadClass(threading.Thread):
  def run(self):
-  global RoomT, PrevExtT, ClimateHist, ClimateOn
-  print("["+DateTime()+"] Service thread started")
+  global LockCfg, RoomT, PrevExtT, ClimateHist, ClimateOn, FanHist, FanOn, comC, MinutesToFanOff, MinutesToFanOn, CfgFanOnTime, CfgFanOffTime
+  LogLine("Service thread started")
 
   recentDay = datetime.datetime.now().day
   recentSampling = datetime.datetime.now()
   recentTime = recentSampling
 
+  # Main loop, each minute
   while 1:
 
     # Handle scheduler events
@@ -771,11 +861,26 @@ class ServiceThreadClass(threading.Thread):
          if evt.evEnabled and ((1 << newTime.weekday()) & evt.evDays) != 0:
            eventTime = datetime.datetime.combine(today, evt.evTime)
            if eventTime > recentTime and eventTime <= newTime:
-              print("["+DateTime()+"] Event triggered: "+evt.GenerateString())
-#              evt.Execute()
+              LogLine("Event triggered: "+evt.GenerateString())
+              evt.Execute()
 
     recentTime = newTime
 
+    # Handle fan periodic forced on/off
+    with LockCfg:
+     if MinutesToFanOn != 0:
+       MinutesToFanOn -= 1
+       if MinutesToFanOn == 0:
+         FanCtl(comC, 'AT*ENH=2')
+         MinutesToFanOff = CfgFanOnTime+1  # +1, since it is decremented immediately below
+         LogLine("Forced")
+
+     if MinutesToFanOff != 0:
+       MinutesToFanOff -= 1
+       if MinutesToFanOff == 0:
+         FanCtl(comC, 'AT*ENH=1')
+         MinutesToFanOn = CfgFanOffTime
+         LogLine("Norm")
 
     # Handle periodic sampling for graphs
     newSampling = datetime.datetime.now()
@@ -791,12 +896,13 @@ class ServiceThreadClass(threading.Thread):
       ExtT[ndx] = xt
 
       ClimateHist[ndx] = ClimateOn
+      FanHist[ndx] = FanOn
 
       # Sample baro pressure
       p = GetBaroP()
       BaroP[ndx] = p
 
-      print("["+DateTime()+"] Room T: %f, Baro P: %f"%(rt, p))
+      LogLine("Ext T: %f, Room T: %f, Baro P: %f"%(xt, rt, p))
 
       # After midnight, once: Dump external temperature for the last 24hrs, shift last days graphs
       if recentDay != datetime.datetime.now().day:
@@ -818,7 +924,10 @@ class ServiceThreadClass(threading.Thread):
 #  Main application, starting WSGI server
 # ===========================================
 
-print "\n*** CondSrv home CondCtl and other peripherals WSGI server ***"
+# Open log file
+LogHandle = open('/www/cgi-bin/condsrv.log','w')
+
+LogLine("*** CondSrv home CondCtl and other peripherals WSGI server ***")
 
 # Create lock objects for accessing comC, comR and configuration state
 LockC = threading.Lock();
@@ -831,29 +940,41 @@ ExtT = [0. for i in range(120*3+1)]
 RoomT = [0. for i in range(120*3+1)]
 FridgeT = [0. for i in range(120*3+1)]
 BaroP = [0. for i in range(120*3+1)]
-ClimateHist = [False for i in range(120*3+1)]
+ClimateHist   = [False for i in range(120*3+1)]
+FanHist = [False for i in range(120*3+1)]
 
 # Create list for saved previous days external measurements
 # 120 total, 15 per hour
 PrevExtT = [[0. for i in range(120*3+1)] for j in range(2)]
 
 # Read global configuration variables from the database
-print "["+DateTime()+"] Loading configuration"
+LogLine("Loading configuration from condsrv")
 sh = shelve.open('condsrv')
 if 'CfgAcCtlEnabled' in sh:
   CfgAcCtlEnabled = sh['CfgAcCtlEnabled']
-  print "["+DateTime()+"]  global state loaded"
+  LogLine(" global state loaded")
 else:
-  print "["+DateTime()+"]  no global state loaded"
+  CfgAcCtlEnabled = False
+  LogLine(" no global state loaded")
+
 if 'CfgEvents' in sh:
   CfgEvents=sh['CfgEvents']
-  print "["+DateTime()+"]  scheduler events loaded"
+  LogLine(" scheduler events loaded")
 else:
-  print "["+DateTime()+"]  no scheduler events loaded"
+  CfgEvents=[]
+  LogLine(" no scheduler events loaded")
+
+if ('CfgFanOnTime' in sh) and ('CfgFanOffTime' in sh):
+  CfgFanOnTime = sh['CfgFanOnTime']
+  CfgFanOffTime = sh['CfgFanOffTime']
+
+if CfgFanOnTime != 0:
+  MinutesToFanOn = CfgFanOffTime
+
 sh.close()
 
 # Load previous day external temperatures from log
-print "["+DateTime()+"] Loading previous day temperatures"
+LogLine("Loading previous day temperatures")
 f = open('/www/cgi-bin/ext_temp.log',"r")
 lineList = f.readlines()
 f.close()
@@ -876,29 +997,33 @@ if t:
 (comR, nameR) = FindPort("/dev/ttyACM*", 9600)
 
 if comC:
- print "["+DateTime()+"] CondCtl port opened at \"%s\", 38400"%nameC
+ LogLine("CondCtl port opened at \"%s\", 38400"%nameC)
 else:
- sys.exit("Cannot open CondCtl at ttyUSB*, exiting");
+ LogLine("Cannot open CondCtl at ttyUSB*, exiting")
+ sys.exit("*** Cannot open CondCtl at ttyUSB*, exiting")
 
 if comR:
- print "["+DateTime()+"] Arduino port opened at \"%s\", 9600"%nameR
+ LogLine("Arduino port opened at \"%s\", 9600"%nameR)
 else:
- sys.exit("Cannot open Arduino at ttyACM*, exiting")
+ LogLine("Cannot open Arduino at ttyACM*, exiting")
+ sys.exit("*** Cannot open Arduino at ttyACM*, exiting")
 
 time.sleep(2);					# Arduino de-glitching/startup
 
 WaitReply(comC, "AT*ECB=200")
 
-# Read current target temperature and mode from CondCtl device
+# Read current target temperature and mode from CondCtl device, sync state
 GetRoomTargetT()
-print "["+DateTime()+("] Target temperature read: %4.1f (AC: %d)"%(TargetTemp, int(TargetTemp)))
+LogLine("Target temperature read: %4.1f (AC: %d)"%(TargetTemp, int(TargetTemp)))
 
 if GetCurrentMode() == 'On':
   MasterOn(0, 0)
-  print "["+DateTime()+"] CondCtl On, setting master on"
+  LogLine("CondCtl On, setting Master On")
 else:
   MasterOff(0, 0)
-  print "["+DateTime()+"] CondCtl Off, setting master off"
+  LogLine("CondCtl Off, setting Master Off")
+
+FanOn = GetCurrentHighFanMode() == 'Forced'
 
 #pdb.set_trace()
 
@@ -912,6 +1037,6 @@ ServiceThread.start()
 # Create and start web server
 #
 srv = make_server('10.0.0.126', 80, application)
-print("["+DateTime()+"] Starting web server...")
+LogLine("Starting web server...")
 
 srv.serve_forever()
