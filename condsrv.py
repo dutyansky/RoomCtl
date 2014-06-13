@@ -39,11 +39,11 @@ CfgEvents = []          # Scheduler events
 #
 # Global state variables
 #
-ExtT = []               # List of external temperatures [120*3]
-PrevExtT = []           # List of previous days external temperatures [2][120*3]
-RoomT = []              # List of room temperatures for current day [120*3]
-BaroP = []              # List of baro pressures for current day [120*3]
-FridgeT = []            # List of fridge temperatures for current day [120*3]
+ExtT = []               # List of external temperatures
+PrevExtT = []           # List of previous days external temperatures
+RoomT = []              # List of room temperatures for current day
+BaroP = []              # List of baro pressures for current day
+FridgeT = []            # List of fridge temperatures for current day
 ClimateHist = []        # List of climate on/off states
 FanHist = []            # List of fan on/off forced states
 LastExtT, LastRoomT, LastFridgeT = 0,0,0 # Recent temperature measurements
@@ -51,7 +51,6 @@ ClimateOn = False       # "Climate control on" state
 FanOn = False           # Current low-level "forced fan" flag
 TargetTemp = 0          # Target room temperature
 MinutesToFanOn = 0
-MinutesToFanOff = 0
 
 LogHandle = 0
 
@@ -168,12 +167,11 @@ def FanCtl(com, s):
 #       Ignored
 #
 def MasterOff(com, s):
-  global comC, comR, LockCfg, CfgAcCtlEnabled, ClimateOn
+  global comC, comR, CfgAcCtlEnabled, ClimateOn
   WaitReply(comC, 'AT*MOD=0')	 # Switch CondCtl off
-  with LockCfg:
-    ClimateOn = False
-    if CfgAcCtlEnabled:
-       WaitReply(comR, 'ATAC=0') # Switch AC off
+  ClimateOn = False
+  if CfgAcCtlEnabled:
+    WaitReply(comR, 'ATAC=0') # Switch AC off
 
 #
 # MasterOn() - Enable all climate control functions
@@ -182,12 +180,11 @@ def MasterOff(com, s):
 #       Ignored
 #
 def MasterOn(com, s):
-  global comC, comR, LockCfg, CfgTemp, CfgAcCtlEnabled, TargetTemp, ClimateOn
+  global comC, comR, CfgTemp, CfgAcCtlEnabled, TargetTemp, ClimateOn
   WaitReply(comC, 'AT*MOD=3')    # Switch CondCtl on
-  with LockCfg:
-    ClimateOn = True
-    if CfgAcCtlEnabled:
-       WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+  ClimateOn = True
+  if CfgAcCtlEnabled:
+    WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
 #
 # Helper functions for getting various peripheral states
@@ -334,7 +331,7 @@ HdrHtml = """
 <meta Http-Equiv="Expires" Content="0">
 <meta Http-Equiv="Pragma-directive: no-cache">
 <meta Http-Equiv="Cache-directive: no-cache">
-<meta name="viewport" content="width=400">
+<meta name="viewport" content="width=410">
 <meta http-equiv="refresh" content="60; url=/cgi-bin/condctl">
 		 <head>
 		 <body>
@@ -419,7 +416,7 @@ class SchedEvent:
 
   # Execute event
   def Execute(self):
-    global comC, comR, LockCfg, TargetTemp, CfgAcCtlEnabled
+    global comC, comR, TargetTemp, CfgAcCtlEnabled
 
     if self.evType == EvType.Off:
       MasterOff(0,'')
@@ -428,11 +425,10 @@ class SchedEvent:
       MasterOn(0,'')
 
     elif self.evType == EvType.SetT:
-      with LockCfg:
-        TargetTemp = self.evTemp
-        WaitReply(comC, 'AT*TGN=%d'%(TargetTemp*10))
-        if CfgAcCtlEnabled:
-           WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+      TargetTemp = self.evTemp
+      WaitReply(comC, 'AT*TGN=%d'%(TargetTemp*10))
+      if CfgAcCtlEnabled:
+         WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
     elif self.evType == EvType.SetB88:
       WaitReply(comR, 'ATSRV=88')
@@ -485,6 +481,10 @@ class SchedEvent:
     return r
 
 
+
+
+
+
 #
 # Main WSGI application handler
 #
@@ -495,53 +495,62 @@ def application(environ, start_response):
   global comC, comR
 
 #  (Temp,h,m,s) = GetExtTemp()
+  LogLine("0")  #11111111
 
   # Generate plot
-  sizeX = 120*3
-  sizeY = 200
-  sizeYr = 50
+  sizeX = 400
+  sizeY = 240
+  sizeYr = 80
+  ty0 = 1
+  ty1 = sizeY-2
 
-  nSamplesR = 120 * 3
+  ry0 = sizeY+4+1
+  ry1 = sizeY+sizeYr-2
+  def ry(t):
+   return ry1-(t-18.)*(ry1-ry0)/(26-18)
 
-  img = Image.new("RGB", (sizeX, sizeY+sizeYr+6), "#FFFFFF");
-  draw = ImageDraw.Draw(img);
+  def ty(t):
+   return ty1-(t-(-30.))*(ty1-ty0)/(30-(-30))
 
-  white = (255,255,255);
-  black = (0,0,0);
-  gridColor = (230,230,230);
-  strobeColor = (0,180,0);
-  lineColor = (0,0,255);
-  lineIColor = (0,200,255);
+  img = Image.new("RGB", (sizeX, sizeY+sizeYr+6), "#FFFFFF")
+  draw = ImageDraw.Draw(img)
 
+  white = (255,255,255)
+  black = (0,0,0)
+  gridColor = (230,230,230)
+  strobeColor = (0,180,0)
+  lineColor = (0,0,255)
+  lineIColor = (0,200,255)
+
+  LogLine("1")  #11111111
+
+  # Space for external temperatures
   draw.rectangle([0, 0, sizeX-1, sizeY-1], outline=black);
+  # Space for internal temperatures
+  draw.rectangle([0, sizeY+4, sizeX-1, sizeY+sizeYr-1], outline=black);
 
+  # Draw bar for on/off states
+  L = len(ClimateHist)
+  for i in range(L-1):
+    draw.rectangle([i*sizeX/L, sizeY+sizeYr+1, (i+1)*sizeX/L, sizeY+sizeYr+3], outline=(0,0,245) if ClimateHist[i] else white)
+
+  L = len(FanHist)
+  for i in range(L-1):
+    draw.rectangle([i*sizeX/L, sizeY+sizeYr+4, (i+1)*sizeX/L, sizeY+sizeYr+6], outline=(0,245,0) if FanHist[i] else white)
+
+  # Grid for external temperatures
   for i in range(1, 24):
    draw.line([i*sizeX/24, 1, i*sizeX/24, sizeY-2], fill=(245,245,245), width=1);
 
   for i in range(-25, 25+1, 10):
-   draw.line([1, sizeY/2-i*3, sizeX-2, sizeY/2-i*3], fill=(245,245,245), width=1);
+   draw.line([1, ty(i), sizeX-2, ty(i)], fill=(245,245,245), width=1);
 
   for i in range(-30, 30+1, 10):
-   draw.line([1, sizeY/2-i*3, sizeX-2, sizeY/2-i*3], fill=gridColor, width=1);
+   draw.line([1, ty(i), sizeX-2, ty(i)], fill=gridColor, width=1);
 
-  draw.line([0, sizeY/2, sizeX-1, sizeY/2], fill=black, width=1);
+  draw.line([0, ty(0), sizeX-1, ty(0)], fill=black, width=1);
 
-  # Draw bar for on/off states
-  for i in range(len(ClimateHist)-1):
-    draw.rectangle([i*sizeX/nSamplesR, sizeY+sizeYr+1, (i+1)*sizeX/nSamplesR, sizeY+sizeYr+3], outline=(0,0,245) if ClimateHist[i] else white)
-
-  for i in range(len(FanHist)-1):
-    draw.rectangle([i*sizeX/nSamplesR, sizeY+sizeYr+4, (i+1)*sizeX/nSamplesR, sizeY+sizeYr+6], outline=(0,245,0) if FanHist[i] else white)
-
-  # Grid for room temperature
-  ry0 = sizeY+4+1
-  ry1 = sizeY+sizeYr-2
-
-  def ry(t):
-    return ry1-(t-18.)*(ry1-ry0)/(26-18)
-
-  draw.rectangle([0, sizeY+4, sizeX-1, sizeY+sizeYr-1], outline=black);
-
+  # Grid for room temperatures
   for i in range(18, 26, 1):
    draw.line([2, ry(i), sizeX-2, ry(i)], fill=gridColor, width=1);
 
@@ -550,15 +559,15 @@ def application(environ, start_response):
 
   draw.line([1, ry(20), sizeX-2, ry(20)], fill=black, width=1);
 
+  # Current time cursor position
   tim = datetime.datetime.now()
   curPos = (tim.hour*60*60+tim.minute*60+tim.second)*sizeX / (24*60*60)
-  curNdx = (tim.hour*60 + tim.minute)/(12/3)
 
   draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=1)
   draw.line([curPos, sizeY+4, curPos, sizeY+sizeYr-2], fill=strobeColor, width=1)
 
   r = 3
-  draw.ellipse([curPos-r, sizeY/2-LastExtT*3-r, curPos+r, sizeY/2-LastExtT*3+r], outline=lineColor)
+  draw.ellipse([curPos-r, ty(LastExtT)-r, curPos+r, ty(LastExtT)+r], outline=lineColor)
 
 
 #  for i in range(nSamplesR-1):
@@ -569,30 +578,34 @@ def application(environ, start_response):
 #   draw.line([i*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i]*3,
 #             (i+1)*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i+1]*3], fill=(130,130,255), width=1);
 
-  for i in range(nSamplesR-1):
-   draw.line([i*sizeX/nSamplesR, sizeY/2-ExtT[i]*3,
-             (i+1)*sizeX/nSamplesR, sizeY/2-ExtT[i+1]*3], fill=lineColor, width=1);
+  LogLine("2") # 2222222222222222
 
-  for i in range(nSamplesR):
-   draw.point([i*sizeX/nSamplesR, sizeY/2-FridgeT[i]*3], fill=(255,200,255));
+  L = len(ExtT)
+  for i in range(L-1):
+   draw.line([i*sizeX/L, ty(ExtT[i]), (i+1)*sizeX/L, ty(ExtT[i+1])], fill=lineColor, width=1)
 
-  for i in range(nSamplesR):
-   draw.point([i*sizeX/nSamplesR, ry(RoomT[i])], fill=lineIColor);
+  for i in range(L):
+   draw.point([i*sizeX/L, ty(FridgeT[i])], fill=(255,200,255));
 
-  r = 2
+  for i in range(L):
+   draw.point([i*sizeX/L, ry(RoomT[i])], fill=lineIColor);
+
+  r = 3
   draw.ellipse([curPos-r, ry(LastRoomT)-r, curPos+r, ry(LastRoomT)+r], outline=lineIColor)
 
-  for i in range(nSamplesR):
-   draw.point([i*sizeX/nSamplesR, sizeY/2-(BaroP[i]-760-10)*3], fill=(224,86,27));
-
+  for i in range(L):
+   draw.point([i*sizeX/L, sizeY/2-ty((BaroP[i]-760-10))], fill=(224,86,27));
 
   draw.text([2,2], "%02d:%02d:%02d"%(tim.hour, tim.minute, tim.second), fill=strobeColor);
 
+  LogLine("3")  #333333333
   f = cStringIO.StringIO()
+  LogLine("4")
+
   img.save(f, "PNG")
 
   f.seek(0)
-
+  LogLine("5")  #555555555
   return [f.getvalue()]
 
 #
@@ -707,25 +720,23 @@ def application(environ, start_response):
   global comC, comR, LockCfg, CfgAcCtlEnabled, TargetTemp, CfgFanOnTime, CfgFanOffTime
 
   def TargetTInc(com, cmd):
-   global LockCfg, CfgAcCtlEnabled, TargetTemp
+   global CfgAcCtlEnabled, TargetTemp
    t = GetRoomTargetT()
    t = t + 0.5
    TargetTemp = t
    WaitReply(com, 'AT*TGN=%d'%(t*10))
-   with LockCfg:
-     if CfgAcCtlEnabled:
-        WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+   if CfgAcCtlEnabled:
+      WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
 
   def TargetTDec(com, cmd):
-   global LockCfg, CfgAcCtlEnabled, TargetTemp
+   global CfgAcCtlEnabled, TargetTemp
    t = GetRoomTargetT()
    t = t - 0.5
    TargetTemp = t
    WaitReply(com, 'AT*TGN=%d'%(t*10))
-   with LockCfg:
-     if CfgAcCtlEnabled:
-        WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+   if CfgAcCtlEnabled:
+      WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
   commandMap = [
    ('CondCtlMode', 'On',    MasterOn,   '',	   0),
@@ -843,12 +854,14 @@ def FindPort(name, rate):
 # ===========================================
 class ServiceThreadClass(threading.Thread):
  def run(self):
-  global LockCfg, RoomT, PrevExtT, ClimateHist, ClimateOn, FanHist, FanOn, comC, MinutesToFanOff, MinutesToFanOn, CfgFanOnTime, CfgFanOffTime
+  global LockCfg, RoomT, PrevExtT, ClimateHist, ClimateOn, FanHist, FanOn, comC, MinutesToFanOn, CfgFanOnTime, CfgFanOffTime
   LogLine("Service thread started")
 
   recentDay = datetime.datetime.now().day
   recentSampling = datetime.datetime.now()
   recentTime = recentSampling
+
+  minutesToFanOff = 0
 
   # Main loop, each minute
   while 1:
@@ -867,30 +880,30 @@ class ServiceThreadClass(threading.Thread):
     recentTime = newTime
 
     # Handle fan periodic forced on/off
-    with LockCfg:
+    with LockCfg:       # Note that MinutesToFanOn global is used to control the subsystem
      if MinutesToFanOn != 0:
        MinutesToFanOn -= 1
        if MinutesToFanOn == 0:
          FanCtl(comC, 'AT*ENH=2')
-         MinutesToFanOff = CfgFanOnTime+1  # +1, since it is decremented immediately below
+         minutesToFanOff = CfgFanOnTime+1  # +1, since it is decremented immediately below
          LogLine("Forced")
 
-     if MinutesToFanOff != 0:
-       MinutesToFanOff -= 1
-       if MinutesToFanOff == 0:
+     if minutesToFanOff != 0:
+       minutesToFanOff -= 1
+       if minutesToFanOff == 0:
          FanCtl(comC, 'AT*ENH=1')
          MinutesToFanOn = CfgFanOffTime
          LogLine("Norm")
 
     # Handle periodic sampling for graphs
     newSampling = datetime.datetime.now()
-    if (newSampling - recentSampling).total_seconds() >= 12/3*60:	# 12/3 minutes passed, sample for graphs
+    if (newSampling - recentSampling).total_seconds() >= 60: # 12/3*60:       # 12/3 minutes passed, sample for graphs
       recentSampling = newSampling
 
       # Sample room & fridge temperature, store into the history array
       xt,rt,ft = GetTemperatures()
       tim = datetime.datetime.now()
-      ndx = (tim.hour * 60 + tim.minute)/(12/3)
+      ndx = (tim.hour * 60 + tim.minute)
       RoomT[ndx] = rt
       FridgeT[ndx] = ft
       ExtT[ndx] = xt
@@ -913,7 +926,7 @@ class ServiceThreadClass(threading.Thread):
         logT = open('/www/cgi-bin/ext_temp.log',"a+")
         strTemp = map(lambda(x): str(x)+' ', Temp)
         logT.write("["+DateTime()+"] ")
-        logT.writelines(strTemp[0:120])
+        logT.writelines(strTemp[0:len(strTemp)])
         logT.write('\n')
         logT.close()
 
@@ -935,17 +948,15 @@ LockR = threading.Lock();
 LockCfg = threading.Lock();
 
 # Create lists for various measurements
-# 120*3 total, 15 per hour
-ExtT = [0. for i in range(120*3+1)]
-RoomT = [0. for i in range(120*3+1)]
-FridgeT = [0. for i in range(120*3+1)]
-BaroP = [0. for i in range(120*3+1)]
-ClimateHist   = [False for i in range(120*3+1)]
-FanHist = [False for i in range(120*3+1)]
+ExtT = [0. for i in range(60*24+1)]
+RoomT = [0. for i in range(60*24+1)]
+FridgeT = [0. for i in range(60*24+1)]
+BaroP = [0. for i in range(60*24+1)]
+ClimateHist   = [False for i in range(60*24+1)]
+FanHist = [False for i in range(60*24+1)]
 
 # Create list for saved previous days external measurements
-# 120 total, 15 per hour
-PrevExtT = [[0. for i in range(120*3+1)] for j in range(2)]
+PrevExtT = [[0. for i in range(60*24+1)] for j in range(2)]
 
 # Read global configuration variables from the database
 LogLine("Loading configuration from condsrv")
