@@ -339,7 +339,7 @@ MainFormHtmlTemplate = """
 #       Ignored
 #
 def MasterOff(a, b):
-  global comC, comR, LockCfg, CfgAcCtlEnabled
+  global comC, comR, LockCfg, CfgAcCtlEnabled, ClimateOn
   WaitReply(comC, 'AT*MOD=0')	 # Switch CondCtl off
   ClimateOn = False
   with LockCfg:
@@ -353,12 +353,12 @@ def MasterOff(a, b):
 #       Ignored
 #
 def MasterOn(a, b):
-  global comC, comR, LockCfg, CfgTemp, CfgAcCtlEnabled, TargetTemp
+  global comC, comR, LockCfg, CfgTemp, CfgAcCtlEnabled, TargetTemp, ClimateOn
   WaitReply(comC, 'AT*MOD=3')    # Switch CondCtl on
   ClimateOn = True
   with LockCfg:
     if CfgAcCtlEnabled:
-       WaitReply(comR, 'ATAC=%d'%(int(TargetTemp+0.5)+1)) # Switch AC on, set temperature
+       WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
 
 # Event types and mapping of select strings to them
@@ -435,7 +435,7 @@ class SchedEvent:
 # Main WSGI application handler
 #
 def application(environ, start_response):
- global comC, comR, LockC, LockR, LockCfg, RoomT, FridgeT, BaroP
+ global comC, comR, LockC, LockR, LockCfg, RoomT, FridgeT, BaroP, ClimateHist
 
  def GenImg():
   global comC, comR
@@ -474,22 +474,22 @@ def application(environ, start_response):
 
   # Draw bar for on/off states
   for i in range(len(ClimateHist)-1):
-    draw.rectangle([i*sizeX/nSamplesR, sizeY+sizeYr+1, (i+1)*sizeX/nSamplesR, sizeY+sizeYr+3], outline=(0,0,245) if ClimateHist[i] else white);
+    draw.rectangle([i*sizeX/nSamplesR, sizeY+sizeYr+1, (i+1)*sizeX/nSamplesR, sizeY+sizeYr+3], outline=(0,0,245) if ClimateHist[i] else white)
 
   # Grid for room temperature
   ry0 = sizeY+4+1
   ry1 = sizeY+sizeYr-2
 
   def ry(t):
-    return ry1-(t-14.)*(ry1-ry0)/(26-14)
+    return ry1-(t-18.)*(ry1-ry0)/(26-18)
 
   draw.rectangle([0, sizeY+4, sizeX-1, sizeY+sizeYr-1], outline=black);
 
-  for i in range(15, 26, 1):
+  for i in range(18, 26, 1):
    draw.line([2, ry(i), sizeX-2, ry(i)], fill=gridColor, width=1);
 
   for i in range(1, 24):
-   draw.line([i*sizeX/24, ry(14), i*sizeX/24, ry(26)], fill=gridColor, width=1);
+   draw.line([i*sizeX/24, ry(18), i*sizeX/24, ry(26)], fill=gridColor, width=1);
 
   draw.line([1, ry(20), sizeX-2, ry(20)], fill=black, width=1);
 
@@ -682,7 +682,7 @@ def application(environ, start_response):
   xt,rt,ft = GetTemperatures()
 
   r.append(MainFormHtmlTemplate%(GetCurrentMode(),
-                                 rt, GetRoomTargetT(), (int(TargetTemp+0.5)+1), xt,
+                                 rt, GetRoomTargetT(), int(TargetTemp), xt,
                                  GetCurrentHighFanMode(comC),
                                  GetCurrentBlindsMode(comR),
                                  recentRate))
@@ -754,7 +754,7 @@ def FindPort(name, rate):
 # ===========================================
 class ServiceThreadClass(threading.Thread):
  def run(self):
-  global RoomT, PrevExtT
+  global RoomT, PrevExtT, ClimateHist, ClimateOn
   print("["+DateTime()+"] Service thread started")
 
   recentDay = datetime.datetime.now().day
@@ -891,7 +891,7 @@ WaitReply(comC, "AT*ECB=200")
 
 # Read current target temperature and mode from CondCtl device
 GetRoomTargetT()
-print "["+DateTime()+("] Target temperature read: %4.1f (AC: %d)"%(TargetTemp, int(TargetTemp+0.5)+1))
+print "["+DateTime()+("] Target temperature read: %4.1f (AC: %d)"%(TargetTemp, int(TargetTemp)))
 
 if GetCurrentMode() == 'On':
   MasterOn(0, 0)
