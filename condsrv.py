@@ -51,6 +51,7 @@ ClimateOn = False       # "Climate control on" state
 FanOn = False           # Current low-level "forced fan" flag
 TargetTemp = 0          # Target room temperature
 MinutesToFanOn = 0
+Img = []
 
 LogHandle = 0
 
@@ -482,38 +483,31 @@ class SchedEvent:
 
 
 
-
-
-
-#
-# Main WSGI application handler
-#
-def application(environ, start_response):
- global comC, comR, LockC, LockR, LockCfg, RoomT, FridgeT, BaroP, ClimateHist, FanHist
-
- def GenImg():
-  global comC, comR
+def PrepImg():
+ global Img, LockImg
 
 #  (Temp,h,m,s) = GetExtTemp()
-  LogLine("0")  #11111111
 
-  # Generate plot
-  sizeX = 400
-  sizeY = 240
-  sizeYr = 80
-  ty0 = 1
-  ty1 = sizeY-2
+ # Generate plot
+ sizeX = 400
+ sizeY = 240
+ sizeYr = 80
 
-  ry0 = sizeY+4+1
-  ry1 = sizeY+sizeYr-2
-  def ry(t):
-   return ry1-(t-18.)*(ry1-ry0)/(26-18)
+ ty0 = 1
+ ty1 = sizeY-2
 
-  def ty(t):
-   return ty1-(t-(-30.))*(ty1-ty0)/(30-(-30))
+ ry0 = sizeY+4+1
+ ry1 = sizeY+sizeYr-2
 
-  img = Image.new("RGB", (sizeX, sizeY+sizeYr+6), "#FFFFFF")
-  draw = ImageDraw.Draw(img)
+ def ry(t):
+  return ry1-(t-18.)*(ry1-ry0)/(26-18)
+
+ def ty(t):
+  return ty1-(t-(-30.))*(ty1-ty0)/(30-(-30))
+
+ with LockImg:
+  Img = Image.new("RGB", (sizeX, sizeY+sizeYr+6), "#FFFFFF")
+  draw = ImageDraw.Draw(Img)
 
   white = (255,255,255)
   black = (0,0,0)
@@ -521,8 +515,6 @@ def application(environ, start_response):
   strobeColor = (0,180,0)
   lineColor = (0,0,255)
   lineIColor = (0,200,255)
-
-  LogLine("1")  #11111111
 
   # Space for external temperatures
   draw.rectangle([0, 0, sizeX-1, sizeY-1], outline=black);
@@ -578,8 +570,6 @@ def application(environ, start_response):
 #   draw.line([i*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i]*3,
 #             (i+1)*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i+1]*3], fill=(130,130,255), width=1);
 
-  LogLine("2") # 2222222222222222
-
   L = len(ExtT)
   for i in range(L-1):
    draw.line([i*sizeX/L, ty(ExtT[i]), (i+1)*sizeX/L, ty(ExtT[i+1])], fill=lineColor, width=1)
@@ -598,14 +588,22 @@ def application(environ, start_response):
 
   draw.text([2,2], "%02d:%02d:%02d"%(tim.hour, tim.minute, tim.second), fill=strobeColor);
 
-  LogLine("3")  #333333333
-  f = cStringIO.StringIO()
-  LogLine("4")
 
-  img.save(f, "PNG")
+#
+# Main WSGI application handler
+#
+def application(environ, start_response):
+ global comC, comR, LockC, LockR, LockCfg, RoomT, FridgeT, BaroP, ClimateHist, FanHist
+
+ def GenImg():
+  global comC, comR, Img, LockImg
+
+  f = cStringIO.StringIO()
+
+  with LockImg:
+   Img.save(f, "PNG")
 
   f.seek(0)
-  LogLine("5")  #555555555
   return [f.getvalue()]
 
 #
@@ -855,6 +853,7 @@ def FindPort(name, rate):
 class ServiceThreadClass(threading.Thread):
  def run(self):
   global LockCfg, RoomT, PrevExtT, ClimateHist, ClimateOn, FanHist, FanOn, comC, MinutesToFanOn, CfgFanOnTime, CfgFanOffTime
+
   LogLine("Service thread started")
 
   recentDay = datetime.datetime.now().day
@@ -862,6 +861,9 @@ class ServiceThreadClass(threading.Thread):
   recentTime = recentSampling
 
   minutesToFanOff = 0
+
+  tim = datetime.datetime.now()
+  lastNdx = int(round((tim.hour * 60 + tim.minute + tim.second/60.)/2.))
 
   # Main loop, each minute
   while 1:
@@ -897,25 +899,36 @@ class ServiceThreadClass(threading.Thread):
 
     # Handle periodic sampling for graphs
     newSampling = datetime.datetime.now()
-    if (newSampling - recentSampling).total_seconds() >= 60: # 12/3*60:       # 12/3 minutes passed, sample for graphs
+    if (newSampling - recentSampling).total_seconds() >= 60*2:
       recentSampling = newSampling
 
-      # Sample room & fridge temperature, store into the history array
+      # Sample parameters, store into the history arrays
       xt,rt,ft = GetTemperatures()
+      p = GetBaroP()
       tim = datetime.datetime.now()
-      ndx = (tim.hour * 60 + tim.minute)
+      ndx = (tim.hour * 60 + tim.minute + tim.second/60.)/2.
+      ndx = int(round(ndx))
       RoomT[ndx] = rt
       FridgeT[ndx] = ft
       ExtT[ndx] = xt
 
       ClimateHist[ndx] = ClimateOn
       FanHist[ndx] = FanOn
-
-      # Sample baro pressure
-      p = GetBaroP()
       BaroP[ndx] = p
 
+      expNdx = (lastNdx + 1) % len(RoomT)
+      if expNdx != ndx:        # If we skipped one entry due to time slippage -- fill the skipped one
+        RoomT[expNdx] = rt
+        FridgeT[expNdx] = ft
+        ExtT[expNdx] = xt
+        ClimateHist[expNdx] = ClimateOn
+        FanHist[expNdx] = FanOn
+        BaroP[expNdx] = p
+
+      lastNdx = ndx
+
       LogLine("Ext T: %f, Room T: %f, Baro P: %f"%(xt, rt, p))
+      PrepImg()
 
       # After midnight, once: Dump external temperature for the last 24hrs, shift last days graphs
       if recentDay != datetime.datetime.now().day:
@@ -924,7 +937,7 @@ class ServiceThreadClass(threading.Thread):
         PrevExtT[1] = PrevExtT[0]
         PrevExtT[0] = ExtT
         logT = open('/www/cgi-bin/ext_temp.log',"a+")
-        strTemp = map(lambda(x): str(x)+' ', Temp)
+        strTemp = map(lambda(x): str(x)+' ', ExtT)
         logT.write("["+DateTime()+"] ")
         logT.writelines(strTemp[0:len(strTemp)])
         logT.write('\n')
@@ -943,20 +956,19 @@ LogHandle = open('/www/cgi-bin/condsrv.log','w')
 LogLine("*** CondSrv home CondCtl and other peripherals WSGI server ***")
 
 # Create lock objects for accessing comC, comR and configuration state
-LockC = threading.Lock();
-LockR = threading.Lock();
-LockCfg = threading.Lock();
+LockC = threading.Lock()
+LockR = threading.Lock()
+LockCfg = threading.Lock()
+LockImg = threading.Lock()
 
 # Create lists for various measurements
-ExtT = [0. for i in range(60*24+1)]
-RoomT = [0. for i in range(60*24+1)]
-FridgeT = [0. for i in range(60*24+1)]
-BaroP = [0. for i in range(60*24+1)]
-ClimateHist   = [False for i in range(60*24+1)]
-FanHist = [False for i in range(60*24+1)]
-
-# Create list for saved previous days external measurements
-PrevExtT = [[0. for i in range(60*24+1)] for j in range(2)]
+ExtT = [0. for i in range(60*24/2+1)]
+RoomT = [0. for i in range(60*24/2+1)]
+FridgeT = [0. for i in range(60*24/2+1)]
+BaroP = [0. for i in range(60*24/2+1)]
+ClimateHist   = [False for i in range(60*24/2+1)]
+FanHist = [False for i in range(60*24/2+1)]
+PrevExtT = [[0. for i in range(60*24/2+1)] for j in range(2)]
 
 # Read global configuration variables from the database
 LogLine("Loading configuration from condsrv")
@@ -984,24 +996,27 @@ if CfgFanOnTime != 0:
 
 sh.close()
 
-# Load previous day external temperatures from log
-LogLine("Loading previous day temperatures")
-f = open('/www/cgi-bin/ext_temp.log',"r")
-lineList = f.readlines()
-f.close()
-if len(lineList) >= 1:
-  s = lineList[len(lineList)-1]
-t = re.search('\[.*\] (.*) $', s)
-if t:
-  t = t.group(1).split(' ')
-  PrevExtT[0] = map(lambda(x): int(x), t)
+Img = Image.new("RGB", (50, 50), "#4F4F4F")
 
-if len(lineList) >= 2:
-  s = lineList[len(lineList)-2]
-t = re.search('\[.*\] (.*) $', s)
-if t:
-  t = t.group(1).split(' ')
-  PrevExtT[1] = map(lambda(x): int(x), t)
+
+# Load previous day external temperatures from log
+#LogLine("Loading previous day temperatures")
+#f = open('/www/cgi-bin/ext_temp.log',"r")
+#lineList = f.readlines()
+#f.close()
+#if len(lineList) >= 1:
+#  s = lineList[len(lineList)-1]
+#t = re.search('\[.*\] (.*) $', s)
+#if t:
+#  t = t.group(1).split(' ')
+#  PrevExtT[0] = map(lambda(x): int(x), t)
+#
+#if len(lineList) >= 2:
+#  s = lineList[len(lineList)-2]
+#t = re.search('\[.*\] (.*) $', s)
+#if t:
+#  t = t.group(1).split(' ')
+#  PrevExtT[1] = map(lambda(x): int(x), t)
 
 # Find and open peripheral com ports
 (comC, nameC) = FindPort("/dev/ttyUSB*", 38400)
