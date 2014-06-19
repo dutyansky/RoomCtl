@@ -29,6 +29,11 @@ from cgi import parse_qs, escape
 from wsgiref.simple_server import (make_server, WSGIRequestHandler)
 
 #
+# Global constants
+#
+HistLen = 60*24/2       # Length for all history arrays, per 24hrs
+
+#
 # Global configuration parameters
 #
 CfgAcCtlEnabled = False	# AC control enabled
@@ -42,11 +47,12 @@ CfgEvents = []          # Scheduler events
 ExtT = []               # List of external temperatures
 PrevExtT = []           # List of previous days external temperatures
 RoomT = []              # List of room temperatures for current day
+RoomTavr = []
 BaroP = []              # List of baro pressures for current day
 FridgeT = []            # List of fridge temperatures for current day
 ClimateHist = []        # List of climate on/off states
 FanHist = []            # List of fan on/off forced states
-LastExtT, LastRoomT, LastFridgeT = 0,0,0 # Recent temperature measurements
+LastExtT, LastRoomT, LastRoomTavr, LastFridgeT = 0,0,0,0 # Recent temperature measurements
 ClimateOn = False       # "Climate control on" state
 FanOn = False           # Current low-level "forced fan" flag
 TargetTemp = 0          # Target room temperature
@@ -482,7 +488,9 @@ class SchedEvent:
     return r
 
 
-
+#
+# PrepImg() - Prepage image with temperature graphs
+#
 def PrepImg():
  global Img, LockImg
 
@@ -553,7 +561,7 @@ def PrepImg():
 
   # Current time cursor position
   tim = datetime.datetime.now()
-  curPos = (tim.hour*60*60+tim.minute*60+tim.second)*sizeX / (24*60*60)
+  curPos = int((tim.hour*60*60+tim.minute*60+tim.second)*sizeX / (24*60*60))
 
   draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=1)
   draw.line([curPos, sizeY+4, curPos, sizeY+sizeYr-2], fill=strobeColor, width=1)
@@ -575,7 +583,13 @@ def PrepImg():
    draw.line([i*sizeX/L, ty(ExtT[i]), (i+1)*sizeX/L, ty(ExtT[i+1])], fill=lineColor, width=1)
 
   for i in range(L):
-   draw.point([i*sizeX/L, ty(FridgeT[i])], fill=(255,200,255));
+   draw.point([i*sizeX/L, ty(FridgeT[i])], fill=(255,200,255))
+
+  for i in range(L):
+   draw.point([i*sizeX/L, ry(RoomTavr[i])], fill=(180,180,245))
+
+  r = 3
+  draw.ellipse([curPos-r, ry(LastRoomTavr)-r, curPos+r, ry(LastRoomTavr)+r], outline=(180,180,245))
 
   for i in range(L):
    draw.point([i*sizeX/L, ry(RoomT[i])], fill=lineIColor);
@@ -584,9 +598,9 @@ def PrepImg():
   draw.ellipse([curPos-r, ry(LastRoomT)-r, curPos+r, ry(LastRoomT)+r], outline=lineIColor)
 
   for i in range(L):
-   draw.point([i*sizeX/L, sizeY/2-ty((BaroP[i]-760-10))], fill=(224,86,27));
+   draw.point([i*sizeX/L, sizeY/2-ty((BaroP[i]-760-10))], fill=(224,86,27))
 
-  draw.text([2,2], "%02d:%02d:%02d"%(tim.hour, tim.minute, tim.second), fill=strobeColor);
+  draw.text([2,2], "%02d:%02d:%02d"%(tim.hour, tim.minute, tim.second), fill=strobeColor)
 
 
 #
@@ -846,13 +860,24 @@ def FindPort(name, rate):
  return (com, s)
 
 
+def average(RoomT, ndx):
+  a = 0.
+  for i in range(int(HistLen / 24 /2)):
+    i1 = ndx-i
+    if i1 < 0:  # Wrap around
+      i1 += HistLen
+    a += RoomT[i1]
+  return a / (HistLen / 24 /2.)
+
+
 # ===========================================
 # Service thread class
 #  -- gathering room temperature statistics, scheduler, other service actions
 # ===========================================
 class ServiceThreadClass(threading.Thread):
  def run(self):
-  global LockCfg, RoomT, PrevExtT, ClimateHist, ClimateOn, FanHist, FanOn, comC, MinutesToFanOn, CfgFanOnTime, CfgFanOffTime
+  global LockCfg, RoomT, RoomTavr, PrevExtT, ClimateHist, ClimateOn, FanHist, FanOn, comC, MinutesToFanOn, CfgFanOnTime, CfgFanOffTime
+  global LastRoomTavr
 
   LogLine("Service thread started")
 
@@ -907,7 +932,7 @@ class ServiceThreadClass(threading.Thread):
       p = GetBaroP()
       tim = datetime.datetime.now()
       ndx = (tim.hour * 60 + tim.minute + tim.second/60.)/2.
-      ndx = int(round(ndx))
+      ndx = int(ndx) # Note: floor, w/o rounding so that we won't overrun the array size
       RoomT[ndx] = rt
       FridgeT[ndx] = ft
       ExtT[ndx] = xt
@@ -927,8 +952,14 @@ class ServiceThreadClass(threading.Thread):
 
       lastNdx = ndx
 
-      LogLine("Ext T: %f, Room T: %f, Baro P: %f"%(xt, rt, p))
-      PrepImg()
+      at = average(RoomT, ndx)
+      LastRoomTavr = at
+      RoomTavr[ndx] = at
+      if expNdx != ndx:        # If we skipped one entry due to time slippage -- fill the skipped one
+        RoomTavr[ndx] = at
+
+      LogLine("XT: %4.1f, RT: %4.1f, AT: %4.1f, P: %f"%(xt, rt, at, p))
+      PrepImg()         # Pre-generate graph
 
       # After midnight, once: Dump external temperature for the last 24hrs, shift last days graphs
       if recentDay != datetime.datetime.now().day:
@@ -962,13 +993,14 @@ LockCfg = threading.Lock()
 LockImg = threading.Lock()
 
 # Create lists for various measurements
-ExtT = [0. for i in range(60*24/2+1)]
-RoomT = [0. for i in range(60*24/2+1)]
-FridgeT = [0. for i in range(60*24/2+1)]
-BaroP = [0. for i in range(60*24/2+1)]
-ClimateHist   = [False for i in range(60*24/2+1)]
-FanHist = [False for i in range(60*24/2+1)]
-PrevExtT = [[0. for i in range(60*24/2+1)] for j in range(2)]
+RoomT = [20. for i in range(HistLen)]
+RoomTavr = [20. for i in range(HistLen)]
+ExtT = [0. for i in range(HistLen)]
+FridgeT = [0. for i in range(HistLen)]
+BaroP = [0. for i in range(HistLen)]
+ClimateHist   = [False for i in range(HistLen)]
+FanHist = [False for i in range(HistLen)]
+PrevExtT = [[0. for i in range(HistLen)] for j in range(2)]
 
 # Read global configuration variables from the database
 LogLine("Loading configuration from condsrv")
