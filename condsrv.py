@@ -18,6 +18,7 @@ import threading
 import sys
 import glob
 import shelve
+import ConfigParser
 
 sys.stderr = sys.stdout
 
@@ -28,6 +29,8 @@ import pdb
 from cgi import parse_qs, escape
 from wsgiref.simple_server import (make_server, WSGIRequestHandler)
 
+from paste.auth.digest import digest_password, AuthDigestHandler
+
 #
 # Global constants
 #
@@ -35,6 +38,12 @@ HistLen = 60*24/2       # Length for all history arrays, per 24hrs
 
 #
 # Global configuration parameters
+#
+RoomTstring = ''
+ExtTstring = ''
+FridgeTstring = ''
+UserName = ''
+UserPass = ''
 #
 CfgAcCtlEnabled = False	# AC control enabled
 CfgFanOnTime = 0        # Fan on forced time, 0=Disabled
@@ -255,17 +264,17 @@ def GetTemperatures():
      Reconnect(x)
 
  for i in range(len(l)):
-   m = re.search('30274600000056.*T=(\d*\.\d*)',l[i])   # Room temperature
+   m = re.search(RoomTstring, l[i])   # Room temperature
    if m:
      t = float(m.group(1))
      roomT = t
 
-   m = re.search('AA8E5B02080074.*T=(\d*\.\d*)',l[i])   # Fridge temperature (now just outside)
+   m = re.search(FridgeTstring, l[i])   # Fridge temperature (now just outside)
    if m:
      t = float(m.group(1))
      fridgeT = t
 
-   m = re.search('7C519F0008004B.*T=(\d*\.\d*)',l[i])   # External temperature
+   m = re.search(ExtTstring, l[i])   # External temperature
    if m:
      t = float(m.group(1))
      extT = t
@@ -977,6 +986,17 @@ class ServiceThreadClass(threading.Thread):
     time.sleep(60) # Sleep for 1 minute
 
 
+def authfunc(environ, realm, username):
+  """Digest Authentication function"""
+
+  LogLine("Access attempt from %s, user: \"%s\""%(environ['REMOTE_ADDR'], username))
+
+  if username == UserName:
+    return digest_password(realm, username, UserPass)
+  else:
+    LogLine("Access denied")
+    return 0
+
 # ===========================================
 #  Main application, starting WSGI server
 # ===========================================
@@ -1002,8 +1022,19 @@ ClimateHist   = [False for i in range(HistLen)]
 FanHist = [False for i in range(HistLen)]
 PrevExtT = [[0. for i in range(HistLen)] for j in range(2)]
 
-# Read global configuration variables from the database
-LogLine("Loading configuration from condsrv")
+# Read global configuration
+LogLine("Loading system configuration from condsrv.cfg")
+config = ConfigParser.ConfigParser()
+config.read('condsrv.cfg')
+RoomTstring = config.get('Thermometers','RoomTstring')
+FridgeTstring = config.get('Thermometers','FridgeTstring')
+ExtTstring = config.get('Thermometers', 'ExtTstring')
+
+UserName = config.get('Users','Name','')
+UserPass = config.get('Users','Password','')
+
+# Read configuration variables from the database
+LogLine("Loading configuration from condsrv.dat")
 sh = shelve.open('condsrv')
 if 'CfgAcCtlEnabled' in sh:
   CfgAcCtlEnabled = sh['CfgAcCtlEnabled']
@@ -1094,7 +1125,9 @@ ServiceThread.start()
 #
 # Create and start web server
 #
-srv = make_server('10.0.0.126', 80, application)
+private_wrapped = AuthDigestHandler(application, "Private area", authfunc)
+
+srv = make_server('10.0.0.126', 80, private_wrapped)
 LogLine("Starting web server...")
 
 srv.serve_forever()
