@@ -119,6 +119,24 @@ def Reconnect(x):
 
 
 #
+# [] = WaitReplySafe(com [, "Command"])
+#
+
+def WaitReplySafe(com, cmd=""):
+ """Wait for [optional command] reply, with several attempts in case of comms errors. See WaitReply()"""
+
+ for i in range(3):
+   try:
+     l = WaitReply(com, cmd)
+   except PortError, x:
+     Reconnect(x)
+   else:
+     return l;  # Exit here for success
+ LogLine("*** WaitReplySafe timeout on cmd=\"%s\""%cmd)
+ raise PortError(com.port)
+ return l
+
+#
 # [] = WaitReply(com [, "Command"])
 #
 def WaitReply(com, cmd=""):
@@ -144,8 +162,7 @@ def WaitReply(com, cmd=""):
      if tmoCnt == 0:
        raise PortError(com.port)
 
-#   if s and not re.search('^Temp\[*', s):
-#    sys.stdout.write("Re:\""+s+"\"\r\n");
+#   sys.stdout.write("Re:\""+s+"\"\r\n");
 
    if s and not re.search('AT.*', s):	# Not "AT..." echo returned
     if s == "OK":			# "OK" (end of output)
@@ -173,7 +190,7 @@ def WaitReply(com, cmd=""):
 #
 def FanCtl(com, s):
   global FanOn
-  WaitReply(com, s)
+  WaitReplySafe(com, s)
   FanOn = s == 'AT*ENH=2'       # Set to True if forced on
 
 #
@@ -184,10 +201,10 @@ def FanCtl(com, s):
 #
 def MasterOff(com, s):
   global comC, comR, CfgAcCtlEnabled, ClimateOn
-  WaitReply(comC, 'AT*MOD=0')	 # Switch CondCtl off
+  WaitReplySafe(comC, 'AT*MOD=0')    # Switch CondCtl off
   ClimateOn = False
   if CfgAcCtlEnabled:
-    WaitReply(comR, 'ATAC=0') # Switch AC off
+    WaitReplySafe(comR, 'ATAC=0') # Switch AC off
 
 #
 # MasterOn() - Enable all climate control functions
@@ -197,17 +214,17 @@ def MasterOff(com, s):
 #
 def MasterOn(com, s):
   global comC, comR, CfgTemp, CfgAcCtlEnabled, TargetTemp, ClimateOn
-  WaitReply(comC, 'AT*MOD=3')    # Switch CondCtl on
+  WaitReplySafe(comC, 'AT*MOD=3')    # Switch CondCtl on
   ClimateOn = True
   if CfgAcCtlEnabled:
-    WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+    WaitReplySafe(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
 #
 # Helper functions for getting various peripheral states
 #
 def GetCurrentMode():
  global comC
- t=re.search('.*\]=(.+)', WaitReply(comC, 'AT*mod$')[0]);
+ t=re.search('.*\]=(.+)', WaitReplySafe(comC, 'AT*mod$')[0]);
  if t:
   r = 'On' if t.group(1) == '3' else 'Off'
  else:
@@ -217,7 +234,7 @@ def GetCurrentMode():
 
 def GetCurrentHighFanMode():
  global comC
- t=re.search('.*\]=(.+)', WaitReply(comC, 'AT*ENH$')[0]);
+ t=re.search('.*\]=(.+)', WaitReplySafe(comC, 'AT*ENH$')[0]);
  if t:
   r = 'Forced' if t.group(1) == '2' else 'On' if t.group(1) == '1' else 'Off'
  else:
@@ -227,7 +244,7 @@ def GetCurrentHighFanMode():
 
 def GetCurrentLowFanMode():
  global comC
- t=re.search('.*\]=(.+)', WaitReply(comC, 'AT*ENL$')[0]);
+ t=re.search('.*\]=(.+)', WaitReplySafe(comC, 'AT*ENL$')[0]);
  if t:
   r = 'Forced' if t.group(1) == '2' else 'On' if t.group(1) == '1' else 'Off'
  else:
@@ -237,7 +254,7 @@ def GetCurrentLowFanMode():
 
 def GetCurrentBlindsMode():
  global comR
- s = WaitReply(comR, 'ATSRVR')[0]
+ s = WaitReplySafe(comR, 'ATSRVR')[0]
  t=re.search('.*:(.+)', s);
  if t:
   r = t.group(1);
@@ -255,13 +272,7 @@ def GetTemperatures():
  roomT = 0
  fridgeT = 0
 
- for i in range(3):
-   try:
-     l = WaitReply(comC, "ATTS")
-     if re.search('Key', l[0]):
-       break
-   except PortError, x:
-     Reconnect(x)
+ l = WaitReplySafe(comC, "ATTS")
 
  for i in range(len(l)):
    m = re.search(RoomTstring, l[i])   # Room temperature
@@ -289,7 +300,7 @@ def GetBaroP():
  global comR
  BaroP = 0
 
- s = WaitReply(comR, 'ATBARO')[0]
+ s = WaitReplySafe(comR, 'ATBARO')[0]
  t=re.search('.*P:(.+)', s);
  if t:
   BaroP = float(t.group(1));
@@ -302,7 +313,7 @@ def GetBaroP():
 def GetRoomTargetT():
  global comC, CfgTemp, TargetTemp
 
- t=re.search('.*\]=(.+)', WaitReply(comC, 'AT*TGN$')[0]);
+ t=re.search('.*\]=(.+)', WaitReplySafe(comC, 'AT*TGN$')[0]);
  if t:
   r = int(t.group(1))/10.
  else:
@@ -316,7 +327,7 @@ def GetRoomTargetT():
 def GetExtTempQQ():
  global comC
 
- Temp_reply = WaitReply(comC, 'ATG');		# Read ext temperature data
+ Temp_reply = WaitReplySafe(comC, 'ATG');           # Read ext temperature data
  Temp = [];
  for s in Temp_reply:
   t = re.search('.*=(.+)', s)
@@ -442,14 +453,14 @@ class SchedEvent:
 
     elif self.evType == EvType.SetT:
       TargetTemp = self.evTemp
-      WaitReply(comC, 'AT*TGN=%d'%(TargetTemp*10))
+      WaitReplySafe(comC, 'AT*TGN=%d'%(TargetTemp*10))
       if CfgAcCtlEnabled:
-         WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+         WaitReplySafe(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
     elif self.evType == EvType.SetB88:
-      WaitReply(comR, 'ATSRV=88')
+      WaitReplySafe(comR, 'ATSRV=88')
     elif self.evType == EvType.SetB100:
-      WaitReply(comR, 'ATSRV=100')
+      WaitReplySafe(comR, 'ATSRV=100')
 
   # Generate self-description string for logs
   def GenerateString(self):
@@ -498,7 +509,7 @@ class SchedEvent:
 
 
 #
-# PrepImg() - Prepage image with temperature graphs
+# PrepImg() - Prepage image with temperature graphs etc.
 #
 def PrepImg():
  global Img, LockImg
@@ -618,7 +629,7 @@ def PrepImg():
 def application(environ, start_response):
  global comC, comR, LockC, LockR, LockCfg, RoomT, FridgeT, BaroP, ClimateHist, FanHist
 
- def GenImg():
+ def GetImg():
   global comC, comR, Img, LockImg
 
   f = cStringIO.StringIO()
@@ -639,83 +650,85 @@ def application(environ, start_response):
 
   params = parse_qs(environ.get('QUERY_STRING', ''))
 
-  if 'Add' in params:		# Add new event
-    with LockCfg:
-      CfgEvents.append(SchedEvent())
+  if environ['REMOTE_USER'] != '':      # If non-empty user (no control otherwise)
 
-  elif 'Del' in params:		# Delete requested
-    i = int(params['Del'][0])
-    with LockCfg:
-      del CfgEvents[i]
+   if 'Add' in params:           # Add new event
+     with LockCfg:
+       CfgEvents.append(SchedEvent())
 
-  elif 'Save' in params:	# Save requested
-    with LockCfg:
-      if 'ControlAC' in params:
-        CfgAcCtlEnabled = True
-      else:
-        CfgAcCtlEnabled = False
+   elif 'Del' in params:         # Delete requested
+     i = int(params['Del'][0])
+     with LockCfg:
+       del CfgEvents[i]
 
-      if ("FanPOn" in params) and ("FanPOff" in params):
-        value = escape(params["FanPOn"][0])
-        if value == "No":
-          CfgFanOnTime = 0
-          CfgFanOffTime = 0
-        else:
-          if int(value) in FanOnOffTimes:
-            CfgFanOnTime = int(value)
-            value = escape(params["FanPOff"][0])
-            if int(value) in FanOnOffTimes:
-              CfgFanOffTime = int(value)
-            else:
-              CfgFanOnTime = 0
-              CfgFanOffTime = 0
-        print CfgFanOnTime, CfgFanOffTime
-        if CfgFanOnTime != 0:
-          MinutesToFanOn = CfgFanOffTime
+   elif 'Save' in params:        # Save requested
+     with LockCfg:
+       if 'ControlAC' in params:
+         CfgAcCtlEnabled = True
+       else:
+         CfgAcCtlEnabled = False
 
-      for i in range(len(CfgEvents)):
-        CfgEvents[i].evEnabled = False
-        CfgEvents[i].evDays = 0
+       if ("FanPOn" in params) and ("FanPOff" in params):
+         value = escape(params["FanPOn"][0])
+         if value == "No":
+           CfgFanOnTime = 0
+           CfgFanOffTime = 0
+         else:
+           if int(value) in FanOnOffTimes:
+             CfgFanOnTime = int(value)
+             value = escape(params["FanPOff"][0])
+             if int(value) in FanOnOffTimes:
+               CfgFanOffTime = int(value)
+             else:
+               CfgFanOnTime = 0
+               CfgFanOffTime = 0
+         print CfgFanOnTime, CfgFanOffTime
+         if CfgFanOnTime != 0:
+           MinutesToFanOn = CfgFanOffTime
 
-      for key in params:
-        m = re.search('(.*)_(.*)', key)
-        if m:			# Match -- "indexed" name, must belong to scheduler event
-          name = m.group(1)
-          i = int(m.group(2))
-          if i >= len(CfgEvents):
-            break
-          if name == 'EvEn':
-            CfgEvents[i].evEnabled = True
-          else:
-            val = escape(params[key][0])
-            if name == 'EvTi':
-              m2 = re.search('(.*):(.*)', val)
-              if m2:
-                CfgEvents[i].evTime = datetime.time(int(m2.group(1)), int(m2.group(2)))
-            elif name == 'EvTy':
-              if val in Select2evType:
-                CfgEvents[i].evType = Select2evType[val]
-              else:
-                CfgEvents[i].evType = EvType.Off
-            elif name == 'EvT':
-              for t in range(16,26):
-                if str(t) == val:
-                  CfgEvents[i].evTemp = t
-            else:
-              m = re.search('EvD(.*)_(.*)', key)
-              if m:
-                CfgEvents[i].evDays |= 1 << int(m.group(1))
+       for i in range(len(CfgEvents)):
+         CfgEvents[i].evEnabled = False
+         CfgEvents[i].evDays = 0
 
-    # Sort events by time
-    CfgEvents.sort(cmp=lambda x,y:cmp(x.evTime, y.evTime))
+       for key in params:
+         m = re.search('(.*)_(.*)', key)
+         if m:                   # Match -- "indexed" name, must belong to scheduler event
+           name = m.group(1)
+           i = int(m.group(2))
+           if i >= len(CfgEvents):
+             break
+           if name == 'EvEn':
+             CfgEvents[i].evEnabled = True
+           else:
+             val = escape(params[key][0])
+             if name == 'EvTi':
+               m2 = re.search('(.*):(.*)', val)
+               if m2:
+                 CfgEvents[i].evTime = datetime.time(int(m2.group(1)), int(m2.group(2)))
+             elif name == 'EvTy':
+               if val in Select2evType:
+                 CfgEvents[i].evType = Select2evType[val]
+               else:
+                 CfgEvents[i].evType = EvType.Off
+             elif name == 'EvT':
+               for t in range(16,26):
+                 if str(t) == val:
+                   CfgEvents[i].evTemp = t
+             else:
+               m = re.search('EvD(.*)_(.*)', key)
+               if m:
+                 CfgEvents[i].evDays |= 1 << int(m.group(1))
 
-    # Saving parameters, save active configuration to file
-    sh = shelve.open('condsrv',writeback=True)
-    sh['CfgAcCtlEnabled'] = CfgAcCtlEnabled
-    sh['CfgEvents'] = CfgEvents
-    sh['CfgFanOnTime'] = CfgFanOnTime
-    sh['CfgFanOffTime'] = CfgFanOffTime
-    sh.close()
+     # Sort events by time
+     CfgEvents.sort(cmp=lambda x,y:cmp(x.evTime, y.evTime))
+
+     # Saving parameters, save active configuration to file
+     sh = shelve.open('condsrv',writeback=True)
+     sh['CfgAcCtlEnabled'] = CfgAcCtlEnabled
+     sh['CfgEvents'] = CfgEvents
+     sh['CfgFanOnTime'] = CfgFanOnTime
+     sh['CfgFanOffTime'] = CfgFanOffTime
+     sh.close()
 
 
   # Generate HTML page, using current configuration
@@ -745,9 +758,9 @@ def application(environ, start_response):
    t = GetRoomTargetT()
    t = t + 0.5
    TargetTemp = t
-   WaitReply(com, 'AT*TGN=%d'%(t*10))
+   WaitReplySafe(com, 'AT*TGN=%d'%(t*10))
    if CfgAcCtlEnabled:
-      WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+      WaitReplySafe(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
 
   def TargetTDec(com, cmd):
@@ -755,9 +768,9 @@ def application(environ, start_response):
    t = GetRoomTargetT()
    t = t - 0.5
    TargetTemp = t
-   WaitReply(com, 'AT*TGN=%d'%(t*10))
+   WaitReplySafe(com, 'AT*TGN=%d'%(t*10))
    if CfgAcCtlEnabled:
-      WaitReply(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
+      WaitReplySafe(comR, 'ATAC=%d'%int(TargetTemp)) # Switch AC on, set temperature
 
   commandMap = [
    ('CondCtlMode', 'On',    MasterOn,   '',	   0),
@@ -767,22 +780,25 @@ def application(environ, start_response):
    ('HighFanMode', 'On',    FanCtl,     'AT*ENH=1', comC),
    ('HighFanMode', 'Off',   FanCtl,     'AT*ENH=0', comC),
    ('HighFanMode', 'Forced',FanCtl,     'AT*ENH=2', comC),
-   ('LowFanMode',  'On',    WaitReply, 'AT*ENL=1', comC),
-   ('LowFanMode',  'Off',   WaitReply, 'AT*ENL=0', comC),
-   ('LowFanMode',  'Forced',WaitReply, 'AT*ENL=2', comC),
-   ('BlindsMode',  '88',    WaitReply, 'ATSRV=88', comR),
-   ('BlindsMode',  '90',    WaitReply, 'ATSRV=90', comR),
-   ('BlindsMode',  '95',    WaitReply, 'ATSRV=95', comR),
-   ('BlindsMode',  '100',   WaitReply, 'ATSRV=100',comR) ]
+   ('LowFanMode',  'On',    WaitReplySafe, 'AT*ENL=1', comC),
+   ('LowFanMode',  'Off',   WaitReplySafe, 'AT*ENL=0', comC),
+   ('LowFanMode',  'Forced',WaitReplySafe, 'AT*ENL=2', comC),
+   ('BlindsMode',  '88',    WaitReplySafe, 'ATSRV=88', comR),
+   ('BlindsMode',  '90',    WaitReplySafe, 'ATSRV=90', comR),
+   ('BlindsMode',  '95',    WaitReplySafe, 'ATSRV=95', comR),
+   ('BlindsMode',  '100',   WaitReplySafe, 'ATSRV=100',comR) ]
 
 
   # Do configuration if requested (if parameters are present in query string)
   params = parse_qs(environ.get('QUERY_STRING', ''))
-  for t in commandMap:
-   (name, value, fnc, cmd, port) = t
-   if name in params:
-    if value == escape(params[name][0]):
-     fnc(port, cmd)
+
+  if environ['REMOTE_USER'] != '':
+
+   for t in commandMap:
+    (name, value, fnc, cmd, port) = t
+    if name in params:
+     if value == escape(params[name][0]):
+      fnc(port, cmd)
 
 #  if 'LightMode' in form:
 #   if form['LightMode'].value == 'Pulse':
@@ -810,10 +826,10 @@ def application(environ, start_response):
                                  recentRate))
   # Sync time with CondCtl
   t=time.localtime()
-  WaitReply(comC, "AT*TMH=%d"%t.tm_hour)
-  WaitReply(comC, "AT*TMM=%d"%t.tm_min)
-  WaitReply(comC, "AT*TMS=%d"%t.tm_sec)
-  WaitReply(comC, "AT*TMW=%d"%t.tm_wday)
+  WaitReplySafe(comC, "AT*TMH=%d"%t.tm_hour)
+  WaitReplySafe(comC, "AT*TMM=%d"%t.tm_min)
+  WaitReplySafe(comC, "AT*TMS=%d"%t.tm_sec)
+  WaitReplySafe(comC, "AT*TMW=%d"%t.tm_wday)
   return r
 
 ########## Main web server entry
@@ -823,14 +839,7 @@ def application(environ, start_response):
 
  if path == 'cgi-bin/genimg':
   start_response('200 OK', [('Content-type', 'image/png')])
-
-  for i in range(3):
-   try:
-    r = GenImg()
-   except PortError, x:
-    Reconnect(x)
-   else:
-    break;
+  r = GetImg()
   return r
 
  elif path == 'cgi-bin/settings':
@@ -840,13 +849,7 @@ def application(environ, start_response):
 
  elif path == 'cgi-bin/condctl':
   start_response('200 OK', [('Content-Type','text/html; charset=ISO-8859-1')])
-  for i in range(3):
-   try:
-    r = CondCtl()
-   except PortError, x:
-    Reconnect(x)
-   else:
-    break;
+  r = CondCtl()
   return r
 
  else:
@@ -989,12 +992,12 @@ class ServiceThreadClass(threading.Thread):
 def authfunc(environ, realm, username):
   """Digest Authentication function"""
 
-  LogLine("Access attempt from %s, user: \"%s\""%(environ['REMOTE_ADDR'], username))
-
   if username == UserName:
     return digest_password(realm, username, UserPass)
+#  elif username == '':
+#    return digest_password(realm, username, '')
   else:
-    LogLine("Access denied")
+    LogLine("Access denied: from %s, user: \"%s\""%(environ['REMOTE_ADDR'], username))
     return 0
 
 # ===========================================
@@ -1099,7 +1102,7 @@ else:
 
 time.sleep(2);					# Arduino de-glitching/startup
 
-WaitReply(comC, "AT*ECB=200")
+WaitReplySafe(comC, "AT*ECB=200")
 
 # Read current target temperature and mode from CondCtl device, sync state
 GetRoomTargetT()

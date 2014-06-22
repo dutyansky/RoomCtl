@@ -685,13 +685,14 @@ Servo1Pos = 90;
  Servo2.write(180-t1-2);  // Calibration & take into account reverse connection
 
  delay(3000);    // Wait
+
  Servo1.write(t+3);
  Servo2.write(180-t-2);
  delay(1500);    // Wait
+
  digitalWrite(RelayPin, LOW);
 
  Servo1Pos = t;
-
  return 1;
 }
 
