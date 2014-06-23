@@ -130,9 +130,13 @@ def WaitReplySafe(com, cmd=""):
      l = WaitReply(com, cmd)
    except PortError, x:
      Reconnect(x)
+     if re.search(".*ttyUSB.*", x.name):
+       com = comC
+     else:
+       com = comR
    else:
      return l;  # Exit here for success
- LogLine("*** WaitReplySafe timeout on cmd=\"%s\""%cmd)
+ LogLine("*** WaitReplySafe retry limit exceeded on cmd=\"%s\""%cmd)
  raise PortError(com.port)
  return l
 
@@ -268,27 +272,33 @@ def GetCurrentBlindsMode():
 # xt,rt,ft = GetTemperatures()
 def GetTemperatures():
  global comC, LastExtT, LastRoomT, LastFridgeT
- extT = 0
- roomT = 0
- fridgeT = 0
+ extT = 255
+ roomT = 255
+ fridgeT = 255
 
- l = WaitReplySafe(comC, "ATTS")
+ cnt = 0;
+ while extT == 255 or roomT == 255 or fridgeT == 255:
+  cnt += 1
+  if cnt >= 100:
+    LogLine("*** ATTS retry limit exceeded in GetTemperatures()")
 
- for i in range(len(l)):
-   m = re.search(RoomTstring, l[i])   # Room temperature
-   if m:
-     t = float(m.group(1))
-     roomT = t
+  l = WaitReplySafe(comC, "ATTS")
+  for i in range(len(l)):
+    m = re.search(RoomTstring, l[i])   # Room temperature
+    if m:
+      t = float(m.group(1))
+      roomT = t
 
-   m = re.search(FridgeTstring, l[i])   # Fridge temperature (now just outside)
-   if m:
-     t = float(m.group(1))
-     fridgeT = t
+    m = re.search(FridgeTstring, l[i])   # Fridge temperature (now just outside)
+    if m:
+      t = float(m.group(1))
+      fridgeT = t
 
-   m = re.search(ExtTstring, l[i])   # External temperature
-   if m:
-     t = float(m.group(1))
-     extT = t
+    m = re.search(ExtTstring, l[i])   # External temperature
+    if m:
+      t = float(m.group(1))
+      extT = t
+
 
  LastExtT = extT
  LastRoomT = roomT
@@ -530,7 +540,7 @@ def PrepImg():
  def ry(t):
   return ry1-(t-18.)*(ry1-ry0)/(26-18)
 
- def ty(t):
+ def xy(t):
   return ty1-(t-(-30.))*(ty1-ty0)/(30-(-30))
 
  with LockImg:
@@ -563,12 +573,12 @@ def PrepImg():
    draw.line([i*sizeX/24, 1, i*sizeX/24, sizeY-2], fill=(245,245,245), width=1);
 
   for i in range(-25, 25+1, 10):
-   draw.line([1, ty(i), sizeX-2, ty(i)], fill=(245,245,245), width=1);
+   draw.line([1, xy(i), sizeX-2, xy(i)], fill=(245,245,245), width=1);
 
   for i in range(-30, 30+1, 10):
-   draw.line([1, ty(i), sizeX-2, ty(i)], fill=gridColor, width=1);
+   draw.line([1, xy(i), sizeX-2, xy(i)], fill=gridColor, width=1);
 
-  draw.line([0, ty(0), sizeX-1, ty(0)], fill=black, width=1);
+  draw.line([0, xy(0), sizeX-1, xy(0)], fill=black, width=1);
 
   # Grid for room temperatures
   for i in range(18, 26, 1):
@@ -587,7 +597,7 @@ def PrepImg():
   draw.line([curPos, sizeY+4, curPos, sizeY+sizeYr-2], fill=strobeColor, width=1)
 
   r = 3
-  draw.ellipse([curPos-r, ty(LastExtT)-r, curPos+r, ty(LastExtT)+r], outline=lineColor)
+  draw.ellipse([curPos-r, xy(LastExtT)-r, curPos+r, xy(LastExtT)+r], outline=lineColor)
 
 
 #  for i in range(nSamplesR-1):
@@ -600,10 +610,10 @@ def PrepImg():
 
   L = len(ExtT)
   for i in range(L-1):
-   draw.line([i*sizeX/L, ty(ExtT[i]), (i+1)*sizeX/L, ty(ExtT[i+1])], fill=lineColor, width=1)
+   draw.line([i*sizeX/L, xy(ExtT[i]), (i+1)*sizeX/L, xy(ExtT[i+1])], fill=lineColor, width=1)
 
   for i in range(L):
-   draw.point([i*sizeX/L, ty(FridgeT[i])], fill=(255,200,255))
+   draw.point([i*sizeX/L, xy(FridgeT[i])], fill=(255,200,255))
 
   for i in range(L):
    draw.point([i*sizeX/L, ry(RoomTavr[i])], fill=(180,180,245))
@@ -617,9 +627,11 @@ def PrepImg():
   r = 3
   draw.ellipse([curPos-r, ry(LastRoomT)-r, curPos+r, ry(LastRoomT)+r], outline=lineIColor)
 
+  # Plot pressure graph on external temperature canvas, calibrated at 760mmHg == -10C
   for i in range(L):
-   draw.point([i*sizeX/L, sizeY/2-ty((BaroP[i]-760-10))], fill=(224,86,27))
+   draw.point([i*sizeX/L, xy((BaroP[i]-760-10))], fill=(224,86,27))
 
+  # Curent timestamp into upper left corner
   draw.text([2,2], "%02d:%02d:%02d"%(tim.hour, tim.minute, tim.second), fill=strobeColor)
 
 
@@ -968,7 +980,7 @@ class ServiceThreadClass(threading.Thread):
       LastRoomTavr = at
       RoomTavr[ndx] = at
       if expNdx != ndx:        # If we skipped one entry due to time slippage -- fill the skipped one
-        RoomTavr[ndx] = at
+        RoomTavr[expNdx] = at
 
       LogLine("XT: %4.1f, RT: %4.1f, AT: %4.1f, P: %f"%(xt, rt, at, p))
       PrepImg()         # Pre-generate graph
@@ -1007,7 +1019,7 @@ def authfunc(environ, realm, username):
 # Open log file
 LogHandle = open('/www/cgi-bin/condsrv.log','w')
 
-LogLine("*** CondSrv home CondCtl and other peripherals WSGI server ***")
+LogLine("** CondSrv home CondCtl and other peripherals WSGI server **")
 
 # Create lock objects for accessing comC, comR and configuration state
 LockC = threading.Lock()
