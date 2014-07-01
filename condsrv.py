@@ -609,6 +609,10 @@ def PrepImg():
 #             (i+1)*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i+1]*3], fill=(130,130,255), width=1);
 
   L = len(ExtT)
+
+  for i in range(L-1):
+   draw.line([i*sizeX/L, xy(PrevExtT[0][i]), (i+1)*sizeX/L, xy(PrevExtT[0][i+1])], fill=(130,130,255), width=1)
+
   for i in range(L-1):
    draw.line([i*sizeX/L, xy(ExtT[i]), (i+1)*sizeX/L, xy(ExtT[i+1])], fill=lineColor, width=1)
 
@@ -1035,7 +1039,7 @@ FridgeT = [0. for i in range(HistLen)]
 BaroP = [0. for i in range(HistLen)]
 ClimateHist   = [False for i in range(HistLen)]
 FanHist = [False for i in range(HistLen)]
-PrevExtT = [[0. for i in range(HistLen)] for j in range(2)]
+PrevExtT = [[20. for i in range(HistLen)] for j in range(2)]
 
 # Read global configuration
 LogLine("Loading system configuration from condsrv.cfg")
@@ -1078,16 +1082,19 @@ Img = Image.new("RGB", (50, 50), "#4F4F4F")
 
 
 # Load previous day external temperatures from log
-#LogLine("Loading previous day temperatures")
-#f = open('/www/cgi-bin/ext_temp.log',"r")
-#lineList = f.readlines()
-#f.close()
-#if len(lineList) >= 1:
-#  s = lineList[len(lineList)-1]
-#t = re.search('\[.*\] (.*) $', s)
-#if t:
-#  t = t.group(1).split(' ')
-#  PrevExtT[0] = map(lambda(x): int(x), t)
+LogLine("Loading previous day temperatures")
+f = open('/www/cgi-bin/ext_temp.log',"r")
+lineList = f.readlines()
+f.close()
+if len(lineList) >= 1:
+  s = lineList[len(lineList)-1]
+t = re.search('\[.*\] (.*) $', s)
+if t:
+  t = t.group(1).split(' ')
+  PrevExtT[0] = map(lambda(x): float(x), t)
+  LogLine("Previous day temperatures loaded")
+else:
+  LogLine("No previous day temperatures loaded")
 #
 #if len(lineList) >= 2:
 #  s = lineList[len(lineList)-2]
