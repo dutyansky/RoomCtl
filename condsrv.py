@@ -414,6 +414,7 @@ HdrHtml = """
 <meta Http-Equiv="Pragma-directive: no-cache">
 <meta Http-Equiv="Cache-directive: no-cache">
 <meta name="viewport" content="width=410">
+<meta name="viewport" content="initial-scale=1">
 <meta http-equiv="refresh" content="60; url=/cgi-bin/condctl">
 		 <head>
 		 <body>
@@ -444,7 +445,46 @@ SettingsHdrHtml = """
 # Main control form template
 #
 MainFormHtmlTemplate = """
-<img SRC="/cgi-bin/genimg">
+
+<table cellpadding=1 cellspacing=1 border=1>
+<tr>
+<td><img SRC="/cgi-bin/genimg"></td>
+
+<td>
+
+<!-- Gismeteo informer START -->
+<link rel="stylesheet" type="text/css" href="http://www.gismeteo.ru/static/css/informer2/gs_informerClient.min.css">
+<div id="gsInformerID-2816A0K0Gl8L8D" class="gsInformer" style="width:240px;height:268px">
+  <div class="gsIContent">
+   <div id="cityLink">
+     <a href="http://www.gismeteo.ru/city/daily/4079/" target="_blank">?????? ? ?????-??????????</a>
+   </div>
+   <div class="gsLinks">
+     <table>
+       <tr>
+         <td>
+           <div class="leftCol">
+             <a href="http://www.gismeteo.ru" target="_blank">
+               <img alt="Gismeteo" title="Gismeteo" src="http://www.gismeteo.ru/static/images/informer2/logo-mini2.png" align="absmiddle" border="0" />
+               <span>Gismeteo</span>
+             </a>
+           </div>
+           <div class="rightCol">
+             <a href="http://www.gismeteo.ru/city/weekly/4079/" target="_blank">??????? ?? 2 ??????</a>
+           </div>
+           </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+<script src="http://www.gismeteo.ru/ajax/getInformer/?hash=2816A0K0Gl8L8D" type="text/javascript"></script>
+<!-- Gismeteo informer END -->
+
+</td>
+</tr>
+</table>
+
 <form>
 <table cellpadding=5 cellspacing=5 border=1>
 <tr><td>Mode: </td>    <td> %s</td><td><INPUT TYPE=submit NAME='CondCtlMode' VALUE='Off'><INPUT TYPE=submit NAME='CondCtlMode' VALUE='On'></td></tr>
