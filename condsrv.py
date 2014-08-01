@@ -70,6 +70,8 @@ Img = []
 
 LogHandle = 0
 
+RecentLogLines = []
+
 #
 # LogLine() - Log line to file & console, prepending datetime stamp
 #
@@ -78,6 +80,9 @@ def LogLine(s):
  LogHandle.write(s1+'\n')
  LogHandle.flush()
  print(s1)
+ for i in range(len(RecentLogLines)-1):
+   RecentLogLines[i] = RecentLogLines[i+1]
+ RecentLogLines[len(RecentLogLines)-1] = s1
 
 # Format: "31/Dec/2012 15:31:16"
 def DateTime():
@@ -147,24 +152,32 @@ class AcController:
       LogLine("AC calibration reset, new: %d, new AC target: %d"%(self.AcCalibration, self.Calibrate(TargetTemp)))
       self.SetTemperature(TargetTemp)
 
-  def AdjustCalibration(self, at, TargetTemp):
+
+  def AdjustCalibration(self, at, at1, TargetTemp):
     if self.AcMinutesToCheck > 0 and CfgAcCtlEnabled and ClimateOn:
       self.AcMinutesToCheck -= 2
       if self.AcMinutesToCheck <= 0:
         LogLine("AC calibration control activated")
 
     if self.AcMinutesToCheck <= 0 and CfgAcCtlEnabled and ClimateOn:
-      if at < TargetTemp - 1:
-        self.AcCalibration += 1
-        LogLine("AC calibration increase, new: %d, new AC target: %d"%(self.AcCalibration, self.Calibrate(TargetTemp)))
-        self.SetTemperature(TargetTemp)
-      elif at > TargetTemp + 1:
-        self.AcCalibration -= 1
-        LogLine("AC calibration decrease, new: %d, new AC target: %d"%(self.AcCalibration, self.Calibrate(TargetTemp)))
-        self.SetTemperature(TargetTemp)
+      if at <= TargetTemp - 1 and at <= at1:
+        if self.AcCalibration < 5:
+          self.AcCalibration += 1
+          LogLine("AC calibration increase, new: %d, new AC target: %d"%(self.AcCalibration, self.Calibrate(TargetTemp)))
+          self.SetTemperature(TargetTemp)
+        else:
+          LogLine("AC calibration already at %d, cannot increase"%self.AcCalibration)
+      elif at >= TargetTemp + 1 and at >= at1:
+        if self.AcCalibration > -5:
+          self.AcCalibration -= 1
+          LogLine("AC calibration decrease, new: %d, new AC target: %d"%(self.AcCalibration, self.Calibrate(TargetTemp)))
+          self.SetTemperature(TargetTemp)
+        else:
+          LogLine("AC calibration already at %d, cannot decrease"%self.AcCalibration)
 
 
-Ac = AcController()       # AC controller object
+# AC controller object
+Ac = AcController()
 
 #
 # [] = WaitReplySafe(com [, "Command"])
@@ -322,7 +335,7 @@ def GetTemperatures():
  auxT = 255
 
  cnt = 0;
- while extT == 255 or roomT == 255 or auxT == 255:
+ while extT >= 255 or roomT >= 255 or auxT >= 255:
   cnt += 1
   if cnt >= 100:
     LogLine("*** ATTS retry limit exceeded in GetTemperatures()")
@@ -332,18 +345,26 @@ def GetTemperatures():
     m = re.search(RoomTstring, l[i])   # Room temperature
     if m:
       t = float(m.group(1))
-      roomT = t
+      if t >= 255:
+        LogLine("*** Invalid value read in ATTS for RoomT: %4.1f"%t)
+      else:
+        roomT = t
 
-    m = re.search(AuxTstring, l[i])   # Fridge temperature (now just outside)
+    m = re.search(AuxTstring, l[i])   # Aux temperature
     if m:
       t = float(m.group(1))
-      auxT = t
+      if t >= 255:
+        LogLine("*** Invalid value read in ATTS for AuxT: %4.1f"%t)
+      else:
+        auxT = t
 
     m = re.search(ExtTstring, l[i])   # External temperature
     if m:
       t = float(m.group(1))
-      extT = t
-
+      if t >= 255:
+        LogLine("*** Invalid value read in ATTS for ExtT: %4.1f"%t)
+      else:
+        extT = t
 
  LastExtT = extT
  LastRoomT = roomT
@@ -399,15 +420,14 @@ def GetExtTempQQ():
 #
 # Main html page header
 # (with auto-refresh)
-#
+#   <!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
+#                 <html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+#                  <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
+
 HdrHtml = """
-  <!DOCTYPE html
-   PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN"
-		 "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-		 <html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
-		 <head>
+<!DOCTYPE HTML>
+                 <head>
 		 <title>CondCtl</title>
-		 <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
 <meta Http-Equiv="Cache-Control" Content="no-cache">
 <meta Http-Equiv="Pragma" Content="no-cache">
 <meta Http-Equiv="Expires" Content="0">
@@ -420,13 +440,13 @@ HdrHtml = """
 		 <body>
 """
 
+
 #
 # Settings page header
 #
 SettingsHdrHtml = """
   <!DOCTYPE html
-   PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN"
-		 "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
+   PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
 		 <html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
 		 <head>
 		 <title>CondCtl</title>
@@ -446,7 +466,8 @@ SettingsHdrHtml = """
 #
 MainFormHtmlTemplate = """
 
-<table cellpadding=1 cellspacing=1 border=1>
+<div style="overflow:scroll; width:1200px;height:350px" >
+<table cellpadding=1 cellspacing=1 border=1 style="font-size:0.8em;line-height:1.2em;font-family:monospace">
 <tr>
 <td><img SRC="/cgi-bin/genimg"></td>
 
@@ -482,8 +503,18 @@ MainFormHtmlTemplate = """
 <!-- Gismeteo informer END -->
 
 </td>
+
+<td>
+ <div>
+
+%s
+
+</div>
+</td>
+
 </tr>
 </table>
+</div>
 
 <form>
 <table cellpadding=5 cellspacing=5 border=1>
@@ -723,9 +754,8 @@ def PrepImg():
   for i in range(L-1):  # Current Ext T
    draw.line([i*sizeX/L, xy(ExtT[i]), (i+1)*sizeX/L, xy(ExtT[i+1])], fill=lineColor, width=1)
 
-  for i in range(L):    # Current fridge (now balcony) T
-   draw.point([i*sizeX/L, xy(AuxT[i])], fill=(255,200,255))
-
+  for i in range(L):    # Current aux T (AC inlet)
+   draw.point([i*sizeX/L, ry(AuxT[i])], fill=(90,121,166))
 
   for i in range(L-1):  # Target T
    draw.line([i*sizeX/L, ry(TgT[i]), (i+1)*sizeX/L, ry(TgT[i+1])], fill=(247,219,166), width=1)
@@ -960,7 +990,12 @@ def application(environ, start_response):
   r = [HdrHtml]		# Output html header
   xt,rt,ft = GetTemperatures()
 
-  r.append(MainFormHtmlTemplate%(GetCurrentMode(),
+  recentLogLinesFmt = ""
+  for i in range(len(RecentLogLines)):
+    recentLogLinesFmt += RecentLogLines[i] + "<br />"
+
+  r.append(MainFormHtmlTemplate%(recentLogLinesFmt,
+                                 GetCurrentMode(),
                                  rt, GenerateRoomTargetTSelect(), GenerateAcSelect(), xt,
                                  GetCurrentHighFanMode(),
                                  GetCurrentBlindsMode(),
@@ -1037,6 +1072,8 @@ class ServiceThreadClass(threading.Thread):
   recentDay = datetime.datetime.now().day
   recentSampling = datetime.datetime.now()
   recentTime = recentSampling
+  at = 20.       # Current aver. temp (initialize for initial copy propagation)
+  at1 = 20.      # Previous average temp samplinggg
 
   minutesToFanOff = 0
 
@@ -1099,13 +1136,14 @@ class ServiceThreadClass(threading.Thread):
       p = GetBaroP()
 
       # Get moving average over room temperature history
+      at1 = at
       at = average(RoomT, ndx)
       LastRoomTavr = at
 
       # Handle AC calibration adjustment
-      Ac.AdjustCalibration(at, TargetTemp)
+      Ac.AdjustCalibration(at, at1, TargetTemp)
       ac = Ac.Calibrate(TargetTemp)     # AC-calibrated target
-      LogLine("T: %4.1f, RT: %4.1f, AT: %4.1f, AC: %2d P: %f"%(xt, rt, at, Ac.Calibrate(TargetTemp), p))
+      LogLine("T: %4.1f, RT: %4.1f, AT: %4.1f, AC: %2d, IT: %4.1f, P: %.3f"%(xt, rt, at, Ac.Calibrate(TargetTemp), ft, p))
 
       # Write samples into history arrays, pre-generate graphs
       RoomT[ndx] = rt
@@ -1167,6 +1205,8 @@ def authfunc(environ, realm, username):
 # ===========================================
 #  Main application, starting WSGI server
 # ===========================================
+
+RecentLogLines = ["" for i in range(26)]
 
 # Open log file
 LogHandle = open('/www/cgi-bin/condsrv.log','w')
