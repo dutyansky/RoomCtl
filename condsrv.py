@@ -341,8 +341,8 @@ def GetTemperatures():
     LogLine("*** ATTS retry limit exceeded in GetTemperatures()")
 
   l = WaitReplySafe(comC, "ATTS")
-  for i in range(len(l)):
-    m = re.search(RoomTstring, l[i])   # Room temperature
+  for ll in l:
+    m = re.search(RoomTstring, ll)   # Room temperature
     if m:
       t = float(m.group(1))
       if t >= 255:
@@ -350,7 +350,7 @@ def GetTemperatures():
       else:
         roomT = t
 
-    m = re.search(AuxTstring, l[i])   # Aux temperature
+    m = re.search(AuxTstring, ll)   # Aux temperature
     if m:
       t = float(m.group(1))
       if t >= 255:
@@ -358,7 +358,7 @@ def GetTemperatures():
       else:
         auxT = t
 
-    m = re.search(ExtTstring, l[i])   # External temperature
+    m = re.search(ExtTstring, ll)   # External temperature
     if m:
       t = float(m.group(1))
       if t >= 255:
@@ -891,7 +891,6 @@ def application(environ, start_response):
      sh['CfgFanOffTime'] = CfgFanOffTime
      sh.close()
 
-
   # Generate HTML page, using current configuration
   r = [SettingsHdrHtml]
 
@@ -903,8 +902,8 @@ def application(environ, start_response):
   r.append("<td>"+GenerateCurrentFanOnOffHtmlString()+"</td></tr>")
   r.append("""<table cellpadding=2 cellspacing=2 border=1>""")
   r.append("""<tr>Timed events</tr>""")
-  for i in range(len(CfgEvents)):
-    r.append(CfgEvents[i].GenerateFormString(i))
+  for i, ev in enumerate(CfgEvents):
+    r.append(ev.GenerateFormString(i))
   r.append("""</table>""")
   r.append("""<INPUT TYPE=submit NAME="Add" value="Add">""")
   r.append("""<INPUT TYPE=submit NAME="Save" value="Save">""")
@@ -991,8 +990,8 @@ def application(environ, start_response):
   xt,rt,ft = GetTemperatures()
 
   recentLogLinesFmt = ""
-  for i in range(len(RecentLogLines)):
-    recentLogLinesFmt += RecentLogLines[i] + "<br />"
+  for ll in RecentLogLines:
+    recentLogLinesFmt += ll + "<br />"
 
   r.append(MainFormHtmlTemplate%(recentLogLinesFmt,
                                  GetCurrentMode(),
