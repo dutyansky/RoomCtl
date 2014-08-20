@@ -29,6 +29,7 @@ from cgi import parse_qs, escape
 from wsgiref.simple_server import (make_server, WSGIRequestHandler)
 
 from paste.auth.digest import digest_password, AuthDigestHandler
+from functools import wraps
 
 #
 # Global constants
@@ -127,10 +128,29 @@ def Reconnect(x):
 #
 # AcController - Air conditioning unit control
 #
-class AcController:
+class AcController(object):
   AcCalibrationTimeout = 30               # Time till we start calibration measurements
   AcMinutesToCheck = AcCalibrationTimeout # Reset activation timeout
   AcCalibration = 1                       # Reset calibration offset to default +1
+  AcCurrentTemp = -1                      # Reset current cached T to impossible
+
+  def __init__(self):
+    self.AcLock = threading.RLock()
+
+  def synchronous(tlockname):
+    """A decorator to place an instance based lock around a method """
+    def _synched(func):
+        @wraps(func)
+        def _synchronizer(self, *args, **kwargs):
+            tlock = self.__getattribute__(tlockname)
+            tlock.acquire()
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                tlock.release()
+        return _synchronizer
+    return _synched
+
 
   # Calibrate(temperature) - Return temperature with current AC temp calibration factor
   def Calibrate(self, t):
@@ -140,19 +160,26 @@ class AcController:
     return int(a)
 
   # SetTemperature() - Set target temperature for AC
+  @synchronous('AcLock')
   def SetTemperature(self, t):
     self.AcMinutesToCheck = self.AcCalibrationTimeout
     if ClimateOn and CfgAcCtlEnabled:
-      LogLine("AC set to %d"%self.Calibrate(t))
-      WaitReplySafe(comR, 'ATAC=%d'%self.Calibrate(t))
+      newT = self.Calibrate(t)
+      if newT != self.AcCurrentTemp:
+        self.AcCurrentTemp = newT
+        LogLine("AC set to %d"%newT)
+        WaitReplySafe(comR, 'ATAC=%d'%newT)
+      else:
+        LogLine("AC already set to %d"%newT)
 
+  @synchronous('AcLock')
   def ResetCalibration(self, newAcSet):
     if self.AcCalibration != newAcSet - TargetTemp:
       self.AcCalibration = newAcSet - TargetTemp
       LogLine("AC calibration reset, new: %d, new AC target: %d"%(self.AcCalibration, self.Calibrate(TargetTemp)))
       self.SetTemperature(TargetTemp)
 
-
+  @synchronous('AcLock')
   def AdjustCalibration(self, at, at1, TargetTemp):
     if self.AcMinutesToCheck > 0 and CfgAcCtlEnabled and ClimateOn:
       self.AcMinutesToCheck -= 2
@@ -265,9 +292,10 @@ def FanCtl(com, s):
 #
 def MasterOff(com, s):
   global comC, comR, CfgAcCtlEnabled, ClimateOn
-  WaitReplySafe(comC, 'AT*MOD=0')    # Switch CondCtl off
-  Ac.SetTemperature(0)         # Switch AC off
-  ClimateOn = False
+  if ClimateOn:
+    WaitReplySafe(comC, 'AT*MOD=0')       # Switch CondCtl off
+    Ac.SetTemperature(0)                  # Switch AC off
+    ClimateOn = False
 
 #
 # MasterOn() - Enable all climate control functions
@@ -277,9 +305,10 @@ def MasterOff(com, s):
 #
 def MasterOn(com, s):
   global comC, comR, CfgTemp, CfgAcCtlEnabled, TargetTemp, ClimateOn
-  WaitReplySafe(comC, 'AT*MOD=3')    # Switch CondCtl on
-  ClimateOn = True
-  Ac.SetTemperature(TargetTemp)
+  if not ClimateOn:
+    WaitReplySafe(comC, 'AT*MOD=3')     # Switch CondCtl on
+    ClimateOn = True                    # Note: Needed here!, for SetTemperature below to work
+    Ac.SetTemperature(TargetTemp)
 
 #
 # Helper functions for getting various peripheral states
@@ -609,6 +638,7 @@ class SchedEvent:
 
     elif self.evType == EvType.SetB88:
       WaitReplySafe(comR, 'ATSRV=88')
+
     elif self.evType == EvType.SetB100:
       WaitReplySafe(comR, 'ATSRV=100')
 
@@ -1107,7 +1137,6 @@ class ServiceThreadClass(threading.Thread):
      if minutesToFanOff != 0:
        minutesToFanOff -= 1
        if minutesToFanOff == 0:
-
          if CfgFanCoolingEnabled:
            FanCtl(comC, 'AT*ENH=1')     # Set default "on" mode for CondCtl device, enabling it to use for cooling as needed
            LogLine("Fan On")
@@ -1213,10 +1242,10 @@ LogHandle = open('/www/cgi-bin/condsrv.log','w')
 LogLine("** CondSrv home CondCtl and other peripherals WSGI server **")
 
 # Create lock objects for accessing comC, comR and configuration state
-LockC = threading.Lock()
-LockR = threading.Lock()
-LockCfg = threading.Lock()
-LockImg = threading.Lock()
+LockC = threading.RLock()
+LockR = threading.RLock()
+LockCfg = threading.RLock()
+LockImg = threading.RLock()
 
 # Create lists for various measurements
 RoomT = [20. for i in range(HistLen)]
