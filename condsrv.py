@@ -18,6 +18,7 @@ import sys
 import glob
 import shelve
 import ConfigParser
+import resource
 
 sys.stderr = sys.stdout
 
@@ -390,6 +391,10 @@ def GetTemperatures():
     m = re.search(ExtTstring, ll)   # External temperature
     if m:
       t = float(m.group(1))
+
+      if t >= 16384:                # Correction for negative numbers representation in diag output
+        t = t - 32768
+
       if t >= 255:
         LogLine("*** Invalid value read in ATTS for ExtT: %4.1f"%t)
       else:
@@ -495,7 +500,7 @@ SettingsHdrHtml = """
 #
 MainFormHtmlTemplate = """
 
-<div style="overflow:scroll; width:1200px;height:350px" >
+<div style="overflow:scroll; width:1240px;height:350px" >
 <table cellpadding=1 cellspacing=1 border=1 style="font-size:0.8em;line-height:1.2em;font-family:monospace">
 <tr>
 <td><img SRC="/cgi-bin/genimg"></td>
@@ -556,6 +561,8 @@ MainFormHtmlTemplate = """
 </tr>
 </table>
 </form>
+%s
+<p>
 %s
 """
 
@@ -1006,6 +1013,9 @@ def application(environ, start_response):
 #    WaitReply(comR, 'ATDLY=500');
 #    WaitReply(comR, 'ATIRPM=200');
 
+  # Prepare memory usage line
+  memUsage = "Memory usage: %s kB"%resource.getrusage(resource.RUSAGE_SELF).ru_maxrss 
+
   # Read bandwidth monitor log file, include last line from it
   fileHandle = open('/root/ckbw.log',"r")
   lineList = fileHandle.readlines()
@@ -1028,7 +1038,8 @@ def application(environ, start_response):
                                  rt, GenerateRoomTargetTSelect(), GenerateAcSelect(), xt,
                                  GetCurrentHighFanMode(),
                                  GetCurrentBlindsMode(),
-                                 recentRate))
+                                 memUsage,
+				 recentRate))
   # Sync time with CondCtl
   t=time.localtime()
   WaitReplySafe(comC, "AT*TMH=%d"%t.tm_hour)
@@ -1171,7 +1182,7 @@ class ServiceThreadClass(threading.Thread):
       # Handle AC calibration adjustment
       Ac.AdjustCalibration(at, at1, TargetTemp)
       ac = Ac.Calibrate(TargetTemp)     # AC-calibrated target
-      LogLine("T: %4.1f, RT: %4.1f, AT: %4.1f, AC: %2d, IT: %4.1f, P: %.3f"%(xt, rt, at, Ac.Calibrate(TargetTemp), ft, p))
+      LogLine("T: %4.1f, RT: %4.1f, AT: %4.1f, AC: %2d, IT: %4.1f, P: %.3f, M: %s"%(xt, rt, at, Ac.Calibrate(TargetTemp), ft, p, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
 
       # Write samples into history arrays, pre-generate graphs
       RoomT[ndx] = rt
