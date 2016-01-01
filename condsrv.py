@@ -118,13 +118,21 @@ class PortError(Exception):
 #
 def Reconnect(x):
  global comC, comR
- time.sleep(2)
- if re.search(".*ttyUSB.*", x.name):
-   (comC, nameX) = FindPort("/dev/ttyUSB*", 38400)
- else:
-   (comR, nameX) = FindPort("/dev/ttyACM*", 9600)
- time.sleep(2);
- LogLine("Error encountered on \""+x.name+"\", reconnected as \""+nameX+"\"");
+
+ for i in range(3):
+   time.sleep(2)
+   if re.search(".*ttyUSB.*", x.name):
+     (comC, nameX) = FindPort("/dev/ttyUSB*", 38400)
+     com = comC
+   else:
+     (comR, nameX) = FindPort("/dev/ttyACM*", 9600)
+     com = comR
+   time.sleep(2);
+   if com != None:  # Successful reconnect
+     LogLine("Error encountered on \""+x.name+"\", reconnected as \""+nameX+"\"");
+     return
+ sys.exit("*** Could not reconnect \""+x.name+"\"")
+
 
 #
 # AcController - Air conditioning unit control
@@ -375,6 +383,10 @@ def GetTemperatures():
     m = re.search(RoomTstring, ll)   # Room temperature
     if m:
       t = float(m.group(1))
+
+      if t >= 16384:                # Correction for negative numbers representation in diag output
+        t = t - 32768
+
       if t >= 255:
         LogLine("*** Invalid value read in ATTS for RoomT: %4.1f"%t)
       else:
@@ -383,6 +395,10 @@ def GetTemperatures():
     m = re.search(AuxTstring, ll)   # Aux temperature
     if m:
       t = float(m.group(1))
+
+      if t >= 16384:                # Correction for negative numbers representation in diag output
+        t = t - 32768
+
       if t >= 255:
         LogLine("*** Invalid value read in ATTS for AuxT: %4.1f"%t)
       else:
