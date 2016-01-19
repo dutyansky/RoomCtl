@@ -10,7 +10,7 @@
 import time
 import serial
 import re
-import Image,ImageDraw
+import Image,ImageDraw,ImageFont
 import cStringIO
 import datetime
 import threading
@@ -19,6 +19,9 @@ import glob
 import shelve
 import ConfigParser
 import resource
+import ftplib
+import urllib2
+
 
 sys.stderr = sys.stdout
 
@@ -64,6 +67,7 @@ FanHist = []            # List of fan on/off forced states
 TgT = []
 AcT = []
 LastExtT, LastRoomT, LastRoomTavr, LastAuxT = 0,0,0,0 # Recent temperature measurements
+LastPressure = 0
 ClimateOn = False       # "Climate control on" state
 FanOn = False           # Current low-level "forced fan" flag
 TargetTemp = 0          # Target room temperature
@@ -73,6 +77,8 @@ Img = []
 LogHandle = 0
 
 RecentLogLines = []
+GismeteoT = []		# [n,3] GisMeteo hourly forecast
+Sun = 0			# [sunrise, sunset] time in minutes
 
 #
 # LogLine() - Log line to file & console, prepending datetime stamp
@@ -516,43 +522,11 @@ SettingsHdrHtml = """
 #
 MainFormHtmlTemplate = """
 
-<div style="overflow:scroll; width:1240px;height:350px" >
+<div style="overflow:scroll; width:1000px;height:350px" >
 <table cellpadding=1 cellspacing=1 border=1 style="font-size:0.8em;line-height:1.2em;font-family:monospace">
 <tr>
 <td><img SRC="/cgi-bin/genimg"></td>
 
-<td>
-
-<!-- Gismeteo informer START -->
-<link rel="stylesheet" type="text/css" href="http://www.gismeteo.ru/static/css/informer2/gs_informerClient.min.css">
-<div id="gsInformerID-2816A0K0Gl8L8D" class="gsInformer" style="width:240px;height:268px">
-  <div class="gsIContent">
-   <div id="cityLink">
-     <a href="http://www.gismeteo.ru/city/daily/4079/" target="_blank">?????? ? ?????-??????????</a>
-   </div>
-   <div class="gsLinks">
-     <table>
-       <tr>
-         <td>
-           <div class="leftCol">
-             <a href="http://www.gismeteo.ru" target="_blank">
-               <img alt="Gismeteo" title="Gismeteo" src="http://www.gismeteo.ru/static/images/informer2/logo-mini2.png" align="absmiddle" border="0" />
-               <span>Gismeteo</span>
-             </a>
-           </div>
-           <div class="rightCol">
-             <a href="http://www.gismeteo.ru/city/weekly/4079/" target="_blank">??????? ?? 2 ??????</a>
-           </div>
-           </td>
-        </tr>
-      </table>
-    </div>
-  </div>
-</div>
-<script src="http://www.gismeteo.ru/ajax/getInformer/?hash=2816A0K0Gl8L8D" type="text/javascript"></script>
-<!-- Gismeteo informer END -->
-
-</td>
 
 <td>
  <div>
@@ -735,41 +709,66 @@ def PrepImg():
   return ty1-(t-(-30.))*(ty1-ty0)/(30-(-30))
 
  with LockImg:
-  Img = Image.new("RGB", (sizeX, sizeY+sizeYr+6), "#FFFFFF")
+
+# White version
+#  backgr = (255, 255, 255)
+#  black = (0,0,0)
+#  gridColor = (230,230,230)
+#  strobeColor = (0,180,0)
+#  lineColor = (0,0,255)
+#  lineIColor = (0,200,255)
+
+# Dark version, to align with widgets
+  backgr = (13,33,87)
+  borderColor = (180,180,180)
+  gridColor = (123,123,128) #  gridColor = (86,86,89)
+  gridColorHalf =(80,80,82)#  gridColorHalf =(65,65,80)
+  lineIColor = (0,200,255)
+  pressureColor = (247,137,94)
+  gisMeteoColor = (180,180,182)
+  timeScaleColor = (250, 250, 250)
+  strobeColor = (0,200,0)
+  lineColor = (123,222,255)
+  lineColorPrev = (43,121,255)
+  sunColor = (255, 237, 79)
+
+
+  Img = Image.new("RGB", (sizeX, sizeY+sizeYr+6), backgr)
   draw = ImageDraw.Draw(Img)
 
-  white = (255,255,255)
-  black = (0,0,0)
-  gridColor = (230,230,230)
-  strobeColor = (0,180,0)
-  lineColor = (0,0,255)
-  lineIColor = (0,200,255)
 
   # Space for external temperatures
-  draw.rectangle([0, 0, sizeX-1, sizeY-1], outline=black);
+  draw.rectangle([0, 0, sizeX-1, sizeY-1], outline=borderColor);
   # Space for internal temperatures
-  draw.rectangle([0, sizeY+4, sizeX-1, sizeY+sizeYr-1], outline=black);
+  draw.rectangle([0, sizeY+4, sizeX-1, sizeY+sizeYr-1], outline=borderColor);
 
   # Draw bar for on/off states
   L = len(ClimateHist)
   for i in range(L-1):
-    draw.rectangle([i*sizeX/L, sizeY+sizeYr+1, (i+1)*sizeX/L, sizeY+sizeYr+3], outline=(0,0,245) if ClimateHist[i] else white)
+    draw.rectangle([i*sizeX/L, sizeY+sizeYr+1, (i+1)*sizeX/L, sizeY+sizeYr+3], outline=(0,0,245) if ClimateHist[i] else backgr)
 
   L = len(FanHist)
   for i in range(L-1):
-    draw.rectangle([i*sizeX/L, sizeY+sizeYr+4, (i+1)*sizeX/L, sizeY+sizeYr+6], outline=(0,245,0) if FanHist[i] else white)
+    draw.rectangle([i*sizeX/L, sizeY+sizeYr+4, (i+1)*sizeX/L, sizeY+sizeYr+6], outline=(0,245,0) if FanHist[i] else backgr)
 
   # Grid for external temperatures
   for i in range(1, 24):
-   draw.line([i*sizeX/24, 1, i*sizeX/24, sizeY-2], fill=(245,245,245), width=1);
+   draw.line([i*sizeX/24, 1, i*sizeX/24, sizeY-2], fill=gridColor, width=1);
 
   for i in range(-25, 25+1, 10):
-   draw.line([1, xy(i), sizeX-2, xy(i)], fill=(245,245,245), width=1);
+   draw.line([1, xy(i), sizeX-2, xy(i)], fill=gridColorHalf, width=1);
 
   for i in range(-30, 30+1, 10):
    draw.line([1, xy(i), sizeX-2, xy(i)], fill=gridColor, width=1);
 
-  draw.line([0, xy(0), sizeX-1, xy(0)], fill=black, width=1);
+  draw.line([0, xy(0), sizeX-1, xy(0)], fill=borderColor, width=1);
+
+  fntScale = ImageFont.truetype('arial.ttf', 15)
+
+  # Time scale
+  for h in [9,12,15,18,21]:
+    draw.text([h*sizeX/24, sizeY/2], "%2d"%(h), font=fntScale, fill=timeScaleColor)
+    draw.line([h*sizeX/24, xy(-2), h*sizeX/24, xy(2)], fill=timeScaleColor, width=1)
 
   # Grid for room temperatures
   for i in range(18, 26, 1):
@@ -778,14 +777,30 @@ def PrepImg():
   for i in range(1, 24):
    draw.line([i*sizeX/24, ry(18), i*sizeX/24, ry(26)], fill=gridColor, width=1);
 
-  draw.line([1, ry(20), sizeX-2, ry(20)], fill=black, width=1);
+  draw.line([1, ry(20), sizeX-2, ry(20)], fill=borderColor, width=1);
+
+  # Plot gisMeteo forecast
+  L = len(GisMeteoT)
+  for i in range(L-1): 
+   draw.line([i*sizeX/L, xy(GisMeteoT[i][1]), (i+1)*sizeX/L, xy(GisMeteoT[i+1][1])], fill=gisMeteoColor, width=1)
+
+  for i in range(L): 
+   GisMeteoT[i][2].seek(0)
+   icon = Image.open(GisMeteoT[i][2])
+   Img.paste(icon, (i*sizeX/L, sizeY*7/8), icon);
+   del icon
+
+  # Plot sunrise & sunset lines
+  for t in Sun:
+    draw.line([t*sizeX/(24*60), 40, t*sizeX/(24*60), sizeY-2], fill=sunColor, width=1)
+
 
   # Current time cursor position
   tim = datetime.datetime.now()
   curPos = int((tim.hour*60*60+tim.minute*60+tim.second)*sizeX / (24*60*60))
 
-  draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=1)
-  draw.line([curPos, sizeY+4, curPos, sizeY+sizeYr-2], fill=strobeColor, width=1)
+  draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=2)
+  draw.line([curPos, sizeY+4, curPos, sizeY+sizeYr-2], fill=strobeColor, width=2)
 
   r = 3
   draw.ellipse([curPos-r, xy(LastExtT)-r, curPos+r, xy(LastExtT)+r], outline=lineColor)
@@ -802,10 +817,10 @@ def PrepImg():
   L = len(ExtT)
 
   for i in range(L-1):  # Previous Ext T
-   draw.line([i*sizeX/L, xy(PrevExtT[0][i]), (i+1)*sizeX/L, xy(PrevExtT[0][i+1])], fill=(130,130,255), width=1)
+   draw.line([i*sizeX/L, xy(PrevExtT[0][i]), (i+1)*sizeX/L, xy(PrevExtT[0][i+1])], fill=lineColorPrev, width=2)
 
   for i in range(L-1):  # Current Ext T
-   draw.line([i*sizeX/L, xy(ExtT[i]), (i+1)*sizeX/L, xy(ExtT[i+1])], fill=lineColor, width=1)
+   draw.line([i*sizeX/L, xy(ExtT[i]), (i+1)*sizeX/L, xy(ExtT[i+1])], fill=lineColor, width=2)
 
   for i in range(L):    # Current aux T (AC inlet)
    draw.point([i*sizeX/L, ry(AuxT[i])], fill=(90,121,166))
@@ -825,10 +840,15 @@ def PrepImg():
 
   # Plot pressure graph on external temperature canvas, calibrated at 760mmHg == -10C
   for i in range(L):
-   draw.point([i*sizeX/L, xy((BaroP[i]-760-10))], fill=(224,86,27))
+   draw.point([i*sizeX/L, xy((BaroP[i]-760-10))], fill=pressureColor)
+   
+  fntPressure = ImageFont.truetype('arial.ttf', 20)
+  draw.text([sizeX/2+sizeX/4, 2], "%d mmHg"%(LastPressure), font=fntPressure, fill=pressureColor)
+
+  fnt = ImageFont.truetype('arial.ttf', 32)
 
   # Curent timestamp into upper left corner
-  draw.text([2,2], "%02d:%02d:%02d"%(tim.hour, tim.minute, tim.second), fill=strobeColor)
+  draw.text([2,2], "%02d:%02d:%02d  %4.1f"%(tim.hour, tim.minute, tim.second, LastExtT), font=fnt, fill=lineColor)
 
 
 #
@@ -1122,12 +1142,15 @@ class ServiceThreadClass(threading.Thread):
  def run(self):
   global LockCfg, RoomT, RoomTavr, PrevExtT, ClimateHist, ClimateOn, FanHist, TgT, AcT, FanOn, comC, MinutesToFanOn, CfgFanOnTime, CfgFanOffTime
   global LastRoomTavr, AcCalibration, AcMinutesToCheck
+  global GisMeteoT, Sun, LastPressure
 
   LogLine("Service thread started")
 
   recentDay = datetime.datetime.now().day
-  recentSampling = datetime.datetime.now()
-  recentTime = recentSampling
+  recentTime = datetime.datetime.now()
+  recentGisMeteoSampling = recentTime
+  recentSampling = -1
+
   at = 20.       # Current aver. temp (initialize for initial copy propagation)
   at1 = 20.      # Previous average temp samplinggg
 
@@ -1177,7 +1200,7 @@ class ServiceThreadClass(threading.Thread):
     # Handle periodic sampling for graphs and AC adjustment
     #  Each 2 minutes:
     newSampling = datetime.datetime.now()
-    if (newSampling - recentSampling).total_seconds() >= 60*2:
+    if recentSampling == -1 or (newSampling - recentSampling).total_seconds() >= 60*2:
       recentSampling = newSampling
 
       # Current sampling time & index in arrays
@@ -1189,6 +1212,7 @@ class ServiceThreadClass(threading.Thread):
       # Sample parameters
       xt,rt,ft = GetTemperatures()
       p = GetBaroP()
+      LastPressure = p
 
       # Get moving average over room temperature history
       at1 = at
@@ -1228,7 +1252,30 @@ class ServiceThreadClass(threading.Thread):
 
       lastNdx = ndx
 
-      PrepImg()         # Pre-generate graph
+      PrepImg()         # Pre-generate temperatures plot
+
+      # Upload image to external hosting
+      f = cStringIO.StringIO()
+      with LockImg:
+        Img.save(f, "PNG")
+      f.seek(0)
+
+      try: 
+        ftp = ftplib.FTP(FtpServer)
+        ftp.login(FtpLogin, FtpPassword)
+        ftp.set_pasv(True)	# Simplistic server supports only pasive mode
+
+        # Deglitch for simplistic Windows server
+        if len(FtpFileName) >= 3:
+          if FtpFileName[0] == '/' and FtpFileName[2] == '/': # Make sure we have single-lettered first "folder"
+            ftp.cwd(FtpFileName[0:2])	# Switch to that folder
+
+        ftp.storbinary('STOR '+FtpFileName, f)
+        ftp.close()
+        f.close()
+      except:
+        print "*** FTP Error:", sys.exc_info()[0]
+
 
       # After midnight, once: Dump external temperature for the last 24hrs, shift last days graphs
       if recentDay != datetime.datetime.now().day:
@@ -1243,6 +1290,14 @@ class ServiceThreadClass(threading.Thread):
         logT.write('\n')
         logT.close()
 
+    # Handle GisMeteo polling
+    #  Each 20 minutes:
+    newGisMeteoSampling = datetime.datetime.now()
+    if (newGisMeteoSampling - recentGisMeteoSampling).total_seconds() >= 60*20:
+      recentGisMeteoSampling = newGisMeteoSampling      
+      (GisMeteoT, Sun) = ReadGisMeteo()
+      LogLine("GisMeteo hourly: "+','.join(str(item) for innerlist in GisMeteoT for item in innerlist))
+
     time.sleep(60) # Sleep for 1 minute
 
 
@@ -1256,6 +1311,74 @@ def authfunc(environ, realm, username):
   else:
     LogLine("Access denied: from %s, user: \"%s\""%(environ['REMOTE_ADDR'], username))
     return 0
+
+
+def ReadGisMeteoPage(url):
+ """page=ReadGisMeteoPage(url)
+  Read page from the given URL
+ """
+
+ if url[0:2] == "//":
+   url = "http:"+url	# Add prefix if missing
+
+ r = ""
+ try: 
+   opener = urllib2.build_opener()
+
+   headers = {
+     'User-Agent': 'Mozilla/5.0 (Windows NT 5.1; rv:10.0.1) Gecko/20100101 Firefox/10.0.1',
+   }
+
+   opener.addheaders = headers.items()
+   response = opener.open(url)
+   r = response.read()
+ except:
+   print "*** URLlib Error:", sys.exc_info()[0]
+
+ return r
+
+
+def ReadGisMeteo():
+ """(gisT, sun)=ReadGisMeteo()
+  Read array of hour:temperatire and sun[2] (sunrise, sunset, in minutes)
+ """
+
+ page=ReadGisMeteoPage("https://www.gismeteo.ru/city/hourly/4079")
+
+
+ # Read prognosis for array of hours for today
+ d = time.strftime("%Y-%m-%d")
+ hours = [0,3,6,9,12,15,18,21]
+
+ gisT = [[0 for i in range(3)] for j in range(len(hours))] 
+ i = 0
+ for h in hours:
+   r=re.search("Local: "+d+" "+str(h)+":00.*?img class=\"png\" src=\"(.*?)\".*?m_temp c'>(.*?)([0-9]+)", page, re.DOTALL)
+   if r:
+     t = int(r.group(3))
+     if 'minus' in r.group(2):
+       t = -t
+  
+     gisT[i][0] = h	# Save hour
+     gisT[i][1] = t	# Save temperature
+     gisT[i][2] = cStringIO.StringIO(ReadGisMeteoPage(r.group(1)))  # Save weather icon 
+     i = i + 1
+
+ # Read sunrise/sunset for today
+ sun = [0, 0]
+ r = re.search("astronomy_value\">(\d\d:\d\d)</b>.*?astronomy_value\">(\d\d:\d\d)</b>", page, re.DOTALL)
+ if r:
+   t = r.group(1)
+   minutes = int(t[0:2])*60+int(t[3:5])
+   sun[0] = minutes
+   t = r.group(2)
+   minutes = int(t[0:2])*60+int(t[3:5])
+   sun[1] = minutes
+
+     
+ return (gisT, sun)
+
+
 
 # ===========================================
 #  Main application, starting WSGI server
@@ -1277,7 +1400,7 @@ LockImg = threading.RLock()
 # Create lists for various measurements
 RoomT = [20. for i in range(HistLen)]
 RoomTavr = [20. for i in range(HistLen)]
-ExtT = [0. for i in range(HistLen)]
+ExtT = [2. for i in range(HistLen)]
 AuxT = [0. for i in range(HistLen)]
 BaroP = [0. for i in range(HistLen)]
 ClimateHist   = [False for i in range(HistLen)]
@@ -1285,6 +1408,8 @@ FanHist = [False for i in range(HistLen)]
 PrevExtT = [[20. for i in range(HistLen)] for j in range(2)]
 TgT = [21. for i in range(HistLen)]
 AcT = [22. for i in range(HistLen)]
+GisMeteoT = [[0 for i in range(3)] for j in range(8)] 
+
 
 # Read global configuration
 LogLine("Loading system configuration from condsrv.cfg")
@@ -1297,7 +1422,13 @@ ExtTstring = config.get('Thermometers', 'ExtTstring')
 UserName = config.get('Users','Name','')
 UserPass = config.get('Users','Password','')
 
-# Read configuration variables from the database
+FtpServer    = config.get('FTP','Server','')
+FtpLogin     = config.get('FTP','Login','')
+FtpPassword  = config.get('FTP','Password','')
+FtpFileName  = config.get('FTP','FileName','')
+
+
+# Read GUI configuration variables from the database
 LogLine("Loading configuration from condsrv.dat")
 sh = shelve.open('condsrv')
 if 'CfgAcCtlEnabled' in sh:
@@ -1385,6 +1516,11 @@ else:
   LogLine("CondCtl Off, setting Master Off")
 
 FanOn = GetCurrentHighFanMode() == 'Forced'
+
+# Read GisMeteo forecast
+(GisMeteoT, Sun) = ReadGisMeteo()
+LogLine("GisMeteo hourly: "+','.join(str(item) for innerlist in GisMeteoT for item in innerlist))
+LogLine("Sun minutes: "+str(Sun[0])+", "+str(Sun[1]))
 
 #pdb.set_trace()
 
