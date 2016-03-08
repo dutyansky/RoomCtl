@@ -21,6 +21,7 @@ import ConfigParser
 import resource
 import ftplib
 import urllib2
+import sys
 
 
 sys.stderr = sys.stdout
@@ -725,7 +726,7 @@ def PrepImg():
   gridColorHalf =(80,80,82)#  gridColorHalf =(65,65,80)
   lineIColor = (0,200,255)
   pressureColor = (247,137,94)
-  gisMeteoColor = (180,180,182)
+  gisMeteoColor = (200,200,200)
   timeScaleColor = (250, 250, 250)
   strobeColor = (0,200,0)
   lineColor = (123,222,255)
@@ -763,10 +764,10 @@ def PrepImg():
 
   draw.line([0, xy(0), sizeX-1, xy(0)], fill=borderColor, width=1);
 
-  fntScale = ImageFont.truetype('arial.ttf', 15)
+  fntScale = ImageFont.truetype('arial.ttf', 20)
 
   # Time scale
-  for h in [9,12,15,18,21]:
+  for h in [6,9,12,15,18,21]:
     draw.text([h*sizeX/24, sizeY/2], "%2d"%(h), font=fntScale, fill=timeScaleColor)
     draw.line([h*sizeX/24, xy(-2), h*sizeX/24, xy(2)], fill=timeScaleColor, width=1)
 
@@ -782,28 +783,25 @@ def PrepImg():
   # Plot gisMeteo forecast
   L = len(GisMeteoT)
   for i in range(L-1): 
-   draw.line([i*sizeX/L, xy(GisMeteoT[i][1]), (i+1)*sizeX/L, xy(GisMeteoT[i+1][1])], fill=gisMeteoColor, width=1)
+   draw.line([i*sizeX/L, xy(GisMeteoT[i][1]), (i+1)*sizeX/L, xy(GisMeteoT[i+1][1])], fill=gisMeteoColor, width=2)
 
-  for i in range(L): 
-   GisMeteoT[i][2].seek(0)
-   icon = Image.open(GisMeteoT[i][2])
-   Img.paste(icon, (i*sizeX/L, sizeY*7/8), icon);
-   del icon
+  try:
+    for i in range(L): 
+      GisMeteoT[i][2].seek(0)
+      icon = Image.open(GisMeteoT[i][2])
+      try:
+        Img.paste(icon, (i*sizeX/L, sizeY*7/8), icon)
+      except ValueError as e:
+        if e.message == 'bad transparency mask':	# If the transparency mask is not liked -- go without it
+           Img.paste(icon, (i*sizeX/L, sizeY*7/8))
+  except:
+    pass
 
   # Plot sunrise & sunset lines
   for t in Sun:
     draw.line([t*sizeX/(24*60), 40, t*sizeX/(24*60), sizeY-2], fill=sunColor, width=1)
-
-
-  # Current time cursor position
-  tim = datetime.datetime.now()
-  curPos = int((tim.hour*60*60+tim.minute*60+tim.second)*sizeX / (24*60*60))
-
-  draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=2)
-  draw.line([curPos, sizeY+4, curPos, sizeY+sizeYr-2], fill=strobeColor, width=2)
-
-  r = 3
-  draw.ellipse([curPos-r, xy(LastExtT)-r, curPos+r, xy(LastExtT)+r], outline=lineColor)
+    fntSun = ImageFont.truetype('arial.ttf', 20)
+    draw.text([t*sizeX/(24*60)+4, 40], "%d:%02d"%(t/60, t%60), font=fntSun, fill=sunColor)
 
 
 #  for i in range(nSamplesR-1):
@@ -834,13 +832,23 @@ def PrepImg():
   for i in range(L):    # Sampled T
    draw.point([i*sizeX/L, ry(RoomT[i])], fill=lineIColor);
 
+  # Plot pressure graph on external temperature canvas, calibrated at 760mmHg == -10C
+  for i in range(L-1):
+   draw.line([i*sizeX/L, xy((BaroP[i]-760-10)), (i+1)*sizeX/L, xy((BaroP[i+1]-760-10))], fill=pressureColor, width=2)
+
+  # Current time cursor position
+  tim = datetime.datetime.now()
+  curPos = int((tim.hour*60*60+tim.minute*60+tim.second)*sizeX / (24*60*60))
+
+  draw.line([curPos, 1, curPos, sizeY-2], fill=strobeColor, width=2)
+  draw.line([curPos, sizeY+4, curPos, sizeY+sizeYr-2], fill=strobeColor, width=2)
+
   r = 3
+  draw.ellipse([curPos-r, xy(LastExtT)-r, curPos+r, xy(LastExtT)+r], outline=lineColor)
+
   draw.ellipse([curPos-r, ry(LastRoomT)-r, curPos+r, ry(LastRoomT)+r], outline=lineIColor)
   draw.ellipse([curPos-r, ry(LastRoomTavr)-r, curPos+r, ry(LastRoomTavr)+r], outline=(165,91,235))
 
-  # Plot pressure graph on external temperature canvas, calibrated at 760mmHg == -10C
-  for i in range(L):
-   draw.point([i*sizeX/L, xy((BaroP[i]-760-10))], fill=pressureColor)
    
   fntPressure = ImageFont.truetype('arial.ttf', 20)
   draw.text([sizeX/2+sizeX/4, 2], "%d mmHg"%(LastPressure), font=fntPressure, fill=pressureColor)
@@ -1182,17 +1190,17 @@ class ServiceThreadClass(threading.Thread):
        if MinutesToFanOn == 0:
          FanCtl(comC, 'AT*ENH=2')
          minutesToFanOff = CfgFanOnTime+1  # +1, since it is decremented immediately below
-         LogLine("Fan Forced")
+         #LogLine("Fan Forced")
 
      if minutesToFanOff != 0:
        minutesToFanOff -= 1
        if minutesToFanOff == 0:
          if CfgFanCoolingEnabled:
            FanCtl(comC, 'AT*ENH=1')     # Set default "on" mode for CondCtl device, enabling it to use for cooling as needed
-           LogLine("Fan On")
+           #LogLine("Fan On")
          else:
            FanCtl(comC, 'AT*ENH=0')     # Just switch off, fan used for this periodic ventilation only
-           LogLine("Fan Off")
+           #LogLine("Fan Off")
 
          MinutesToFanOn = CfgFanOffTime # Start timeout till switching on
 
@@ -1222,7 +1230,7 @@ class ServiceThreadClass(threading.Thread):
       # Handle AC calibration adjustment
       Ac.AdjustCalibration(at, at1, TargetTemp)
       ac = Ac.Calibrate(TargetTemp)     # AC-calibrated target
-      LogLine("T: %4.1f, RT: %4.1f, AT: %4.1f, AC: %2d, IT: %4.1f, P: %.3f, M: %s"%(xt, rt, at, Ac.Calibrate(TargetTemp), ft, p, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+#      LogLine("T: %4.1f, RT: %4.1f, AT: %4.1f, AC: %2d, IT: %4.1f, P: %.3f, M: %s"%(xt, rt, at, Ac.Calibrate(TargetTemp), ft, p, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
 
       # Write samples into history arrays, pre-generate graphs
       RoomT[ndx] = rt
@@ -1261,7 +1269,7 @@ class ServiceThreadClass(threading.Thread):
       f.seek(0)
 
       try: 
-        ftp = ftplib.FTP(FtpServer)
+        ftp = ftplib.FTP(FtpServer, timeout=10)
         ftp.login(FtpLogin, FtpPassword)
         ftp.set_pasv(True)	# Simplistic server supports only pasive mode
 
@@ -1330,7 +1338,7 @@ def ReadGisMeteoPage(url):
    }
 
    opener.addheaders = headers.items()
-   response = opener.open(url)
+   response = opener.open(url, timeout=10)
    r = response.read()
  except:
    print "*** URLlib Error:", sys.exc_info()[0]
@@ -1342,9 +1350,7 @@ def ReadGisMeteo():
  """(gisT, sun)=ReadGisMeteo()
   Read array of hour:temperatire and sun[2] (sunrise, sunset, in minutes)
  """
-
  page=ReadGisMeteoPage("https://www.gismeteo.ru/city/hourly/4079")
-
 
  # Read prognosis for array of hours for today
  d = time.strftime("%Y-%m-%d")
@@ -1374,7 +1380,6 @@ def ReadGisMeteo():
    t = r.group(2)
    minutes = int(t[0:2])*60+int(t[3:5])
    sun[1] = minutes
-
      
  return (gisT, sun)
 
