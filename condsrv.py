@@ -737,7 +737,6 @@ def PrepImg():
   Img = Image.new("RGB", (sizeX, sizeY+sizeYr+6), backgr)
   draw = ImageDraw.Draw(Img)
 
-
   # Space for external temperatures
   draw.rectangle([0, 0, sizeX-1, sizeY-1], outline=borderColor);
   # Space for internal temperatures
@@ -780,15 +779,27 @@ def PrepImg():
 
   draw.line([1, ry(20), sizeX-2, ry(20)], fill=borderColor, width=1);
 
-  # Plot gisMeteo forecast
+  # Plot gisMeteo forecast, prepare min/max temperatures (output later)
   L = len(GisMeteoT)
+  maxT = -100
+  minT = 100
+  maxTi = None
+  minTi = None
+  for i in range(L):
+    if GisMeteoT[i][1] > maxT:
+      maxT = GisMeteoT[i][1]
+      maxTi = i
+    if GisMeteoT[i][1] < minT:
+      minT = GisMeteoT[i][1]
+      minTi = i          
+      
   for i in range(L-1): 
-   draw.line([i*sizeX/L, xy(GisMeteoT[i][1]), (i+1)*sizeX/L, xy(GisMeteoT[i+1][1])], fill=gisMeteoColor, width=2)
-
+    draw.line([i*sizeX/L, xy(GisMeteoT[i][1]), (i+1)*sizeX/L, xy(GisMeteoT[i+1][1])], fill=gisMeteoColor, width=2)
+    
   try:
     for i in range(L): 
       GisMeteoT[i][2].seek(0)
-      icon = Image.open(GisMeteoT[i][2])
+      icon = Image.open(GisMeteoT[i][2]).convert("RGBA")  # Make sure format is RGBA and not paletted alpha
       try:
         Img.paste(icon, (i*sizeX/L, sizeY*7/8), icon)
       except ValueError as e:
@@ -802,15 +813,6 @@ def PrepImg():
     draw.line([t*sizeX/(24*60), 40, t*sizeX/(24*60), sizeY-2], fill=sunColor, width=1)
     fntSun = ImageFont.truetype('arial.ttf', 20)
     draw.text([t*sizeX/(24*60)+4, 40], "%d:%02d"%(t/60, t%60), font=fntSun, fill=sunColor)
-
-
-#  for i in range(nSamplesR-1):
-#   draw.line([i*sizeX/nSamplesR, sizeY/2-PrevExtT[1][i]*3,
-#             (i+1)*sizeX/nSamplesR, sizeY/2-PrevExtT[1][i+1]*3], fill=(190,190,255), width=1);
-
-#  for i in range(nSamplesR-1):
-#   draw.line([i*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i]*3,
-#             (i+1)*sizeX/nSamplesR, sizeY/2-PrevExtT[0][i+1]*3], fill=(130,130,255), width=1);
 
   L = len(ExtT)
 
@@ -848,11 +850,18 @@ def PrepImg():
 
   draw.ellipse([curPos-r, ry(LastRoomT)-r, curPos+r, ry(LastRoomT)+r], outline=lineIColor)
   draw.ellipse([curPos-r, ry(LastRoomTavr)-r, curPos+r, ry(LastRoomTavr)+r], outline=(165,91,235))
-
    
   fntPressure = ImageFont.truetype('arial.ttf', 20)
   draw.text([sizeX/2+sizeX/4, 2], "%d mmHg"%(LastPressure), font=fntPressure, fill=pressureColor)
 
+  draw.text([maxTi*3*sizeX/24, xy(maxT)-23], "%d"%(maxT), font=fntScale, fill=timeScaleColor)
+  r = 3
+  p = maxTi*3*sizeX/24
+  draw.ellipse([p-r, xy(maxT)-r, p+r, xy(maxT)+r], outline=gisMeteoColor)
+  draw.text([minTi*3*sizeX/24, xy(minT)+3], "%d"%(minT), font=fntScale, fill=timeScaleColor)
+  p = minTi*3*sizeX/24
+  draw.ellipse([p-r, xy(minT)-r, p+r, xy(minT)+r], outline=gisMeteoColor) 
+  
   fnt = ImageFont.truetype('arial.ttf', 32)
 
   # Curent timestamp into upper left corner
