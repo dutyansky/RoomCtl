@@ -796,17 +796,30 @@ def PrepImg():
   for i in range(L-1): 
     draw.line([i*sizeX/L, xy(GisMeteoT[i][1]), (i+1)*sizeX/L, xy(GisMeteoT[i+1][1])], fill=gisMeteoColor, width=2)
     
-  try:
-    for i in range(L): 
-      GisMeteoT[i][2].seek(0)
-      icon = Image.open(GisMeteoT[i][2]).convert("RGBA")  # Make sure format is RGBA and not paletted alpha
-      try:
-        Img.paste(icon, (i*sizeX/L, sizeY*7/8), icon)
-      except ValueError as e:
-        if e.message == 'bad transparency mask':	# If the transparency mask is not liked -- go without it
-           Img.paste(icon, (i*sizeX/L, sizeY*7/8))
-  except:
-    pass
+  def FixIcon(icon):
+    """ Fix Gismeteo-originated icon, make pixels with 255 in all channels transparent """
+    width, height = icon.size
+    pixdata = icon.load()
+    for y in range(height):
+      for x in range(width):
+        if pixdata[y,x] == (255,255,255,255):
+          pixdata[y,x] = (255,255,255,0)
+    return icon
+    
+ # try:
+  for i in range(L): 
+    GisMeteoT[i][2].seek(0)
+    icon = Image.open(GisMeteoT[i][2]).convert("RGBA")  # Make sure format is RGBA and not paletted alpha
+#      try:
+
+    icon = FixIcon(icon)
+    
+    Img.paste(icon, (i*sizeX/L, sizeY*7/8), icon)
+#      except ValueError as e:
+#        if e.message == 'bad transparency mask':	# If the transparency mask is not liked -- go without it
+#           Img.paste(icon, (i*sizeX/L, sizeY*7/8))
+#  except:
+#    pass
 
   # Plot sunrise & sunset lines
   for t in Sun:
