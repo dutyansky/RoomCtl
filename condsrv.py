@@ -806,50 +806,54 @@ def PrepImg():
           pixdata[y,x] = (255,255,255,0)
     return icon
     
- # try:
-  for i in range(L): 
-    GisMeteoT[i][2].seek(0)
-    icon = Image.open(GisMeteoT[i][2]).convert("RGBA")  # Make sure format is RGBA and not paletted alpha
-#      try:
-
-    icon = FixIcon(icon)
-    
-    Img.paste(icon, (i*sizeX/L, sizeY*7/8), icon)
-#      except ValueError as e:
-#        if e.message == 'bad transparency mask':	# If the transparency mask is not liked -- go without it
-#           Img.paste(icon, (i*sizeX/L, sizeY*7/8))
-#  except:
-#    pass
+  try:
+    for i in range(L): 
+      GisMeteoT[i][2].seek(0)
+      icon = Image.open(GisMeteoT[i][2]).convert("RGBA")  # Make sure format is RGBA and not paletted alpha
+      try:
+        icon = FixIcon(icon)    
+        Img.paste(icon, (i*sizeX/L, sizeY*7/8), icon)
+      except ValueError as e:
+        if e.message == 'bad transparency mask':	# If the transparency mask is not liked -- go without it
+          Img.paste(icon, (i*sizeX/L, sizeY*7/8))
+  except:
+    pass
 
   # Plot sunrise & sunset lines
   for t in Sun:
     draw.line([t*sizeX/(24*60), 40, t*sizeX/(24*60), sizeY-2], fill=sunColor, width=1)
     fntSun = ImageFont.truetype('arial.ttf', 20)
-    draw.text([t*sizeX/(24*60)+4, 40], "%d:%02d"%(t/60, t%60), font=fntSun, fill=sunColor)
+    s = "%d:%02d"%(t/60, t%60)
+    sz = draw.textsize(s, font=fntSun)
+    if t/60 > 20 or (t/60 == 20 and t%60 > 40):
+      x_pos = t*sizeX/(24*60)-sz[0]-4  # Text to the left of the line
+    else:
+      x_pos = t*sizeX/(24*60)+4     # Text to the right of the line 
+    draw.text([x_pos, 40], s, font=fntSun, fill=sunColor)
 
   L = len(ExtT)
 
   for i in range(L-1):  # Previous Ext T
-   draw.line([i*sizeX/L, xy(PrevExtT[0][i]), (i+1)*sizeX/L, xy(PrevExtT[0][i+1])], fill=lineColorPrev, width=2)
+    draw.line([i*sizeX/L, xy(PrevExtT[0][i]), (i+1)*sizeX/L, xy(PrevExtT[0][i+1])], fill=lineColorPrev, width=2)
 
   for i in range(L-1):  # Current Ext T
-   draw.line([i*sizeX/L, xy(ExtT[i]), (i+1)*sizeX/L, xy(ExtT[i+1])], fill=lineColor, width=2)
+    draw.line([i*sizeX/L, xy(ExtT[i]), (i+1)*sizeX/L, xy(ExtT[i+1])], fill=lineColor, width=2)
 
   for i in range(L):    # Current aux T (AC inlet)
-   draw.point([i*sizeX/L, ry(AuxT[i])], fill=(90,121,166))
+    draw.point([i*sizeX/L, ry(AuxT[i])], fill=(90,121,166))
 
   for i in range(L-1):  # Target T
-   draw.line([i*sizeX/L, ry(TgT[i]), (i+1)*sizeX/L, ry(TgT[i+1])], fill=(247,219,166), width=1)
+    draw.line([i*sizeX/L, ry(TgT[i]), (i+1)*sizeX/L, ry(TgT[i+1])], fill=(247,219,166), width=1)
   for i in range(L-1):  # Target AC T
-   draw.line([i*sizeX/L, ry(AcT[i]), (i+1)*sizeX/L, ry(AcT[i+1])], fill=(247,166,166), width=1)
+    draw.line([i*sizeX/L, ry(AcT[i]), (i+1)*sizeX/L, ry(AcT[i+1])], fill=(247,166,166), width=1)
   for i in range(L):    # Averaged T
-   draw.point([i*sizeX/L, ry(RoomTavr[i])], fill=(165,91,235))
+    draw.point([i*sizeX/L, ry(RoomTavr[i])], fill=(165,91,235))
   for i in range(L):    # Sampled T
-   draw.point([i*sizeX/L, ry(RoomT[i])], fill=lineIColor);
+    draw.point([i*sizeX/L, ry(RoomT[i])], fill=lineIColor);
 
   # Plot pressure graph on external temperature canvas, calibrated at 760mmHg == -10C
   for i in range(L-1):
-   draw.line([i*sizeX/L, xy((BaroP[i]-760-10)), (i+1)*sizeX/L, xy((BaroP[i+1]-760-10))], fill=pressureColor, width=2)
+    draw.line([i*sizeX/L, xy((BaroP[i]-760-10)), (i+1)*sizeX/L, xy((BaroP[i+1]-760-10))], fill=pressureColor, width=2)
 
   # Current time cursor position
   tim = datetime.datetime.now()
