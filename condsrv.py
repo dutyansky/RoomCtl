@@ -1369,7 +1369,7 @@ def ReadGisMeteo():
   """(gisT, sun)=ReadGisMeteo()
    Read array of hour:temperatire and sun[2] (sunrise, sunset, in minutes)
   """
-  page=ReadGisMeteoPage("https://www.gismeteo.ru/city/hourly/4079")
+  page=ReadGisMeteoPage("https://www.gismeteo.ru/weather-sankt-peterburg-4079/hourly")
   
   # Read prognosis for array of hours for today
   d = time.strftime("%Y-%m-%d")
@@ -1377,31 +1377,27 @@ def ReadGisMeteo():
   
   gisT = [[0 for i in range(3)] for j in range(len(hours))] 
   i = 0
+  rr = re.finditer("data-value=\"(.*?)\"", page, re.DOTALL)
   for h in hours:
-    r=re.search("Local: "+d+" "+str(h)+":00.*?img class=\"png\" src=\"(.*?)\".*?m_temp c'>(.*?)([0-9]+)", page, re.DOTALL)
+    r = rr.next()
     if r:
-      t = int(r.group(3))
-      if 'minus' in r.group(2):
-        t = -t
-   
+      t = int(r.group(1))
       gisT[i][0] = h	# Save hour
       gisT[i][1] = t	# Save temperature
-      gisT[i][2] = cStringIO.StringIO(ReadGisMeteoPage(r.group(1)))  # Save weather icon 
+      gisT[i][2] = None # cStringIO.StringIO(ReadGisMeteoPage(r.group(1)))  # Save weather icon 
       i = i + 1
   
   # Read sunrise/sunset for today
   sun = [0, 0]
-  r = re.search("astronomy_value\">(\d\d:\d\d)</b>.*?astronomy_value\">(\d\d:\d\d)</b>", page, re.DOTALL)
+  r = re.search("astro_item\">(\d+):(\d+)</span>.*?astro_item\">(\d+):(\d+)</span>", page, re.DOTALL)
   if r:
-    t = r.group(1)
-    minutes = int(t[0:2])*60+int(t[3:5])
+    minutes = int(r.group(1))*60+int(r.group(2))
     sun[0] = minutes
-    t = r.group(2)
-    minutes = int(t[0:2])*60+int(t[3:5])
+
+    minutes = int(r.group(3))*60+int(r.group(4))
     sun[1] = minutes
       
   return (gisT, sun)
-  
   
 
 # ===========================================
